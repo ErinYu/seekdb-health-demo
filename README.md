@@ -1,44 +1,187 @@
-# 🩺 SeekDB 慢病早期预警 Agent
+# 🩺 慢病早期预警 Agent — SeekDB Demo
 
-基于 **SeekDB**（OceanBase AI-native 数据库）的慢性病健康风险评估 demo，核心亮点是用一次 SQL 调用同时完成 **向量搜索 + 全文检索 + SQL 过滤**。
+基于 **SeekDB**（OceanBase AI-native 数据库）的个性化健康风险评估 demo。
+
+用户每天写一段健康日记，系统就会给出一个风险评估，并随着使用时间的增长越来越"了解"这个用户。产品的所有核心分析——人群对比、趋势追踪、基线计算、实验分析、反馈矫正——**全部由 SeekDB 的混合搜索和 SQL 能力承载，无需额外引入向量数据库或搜索引擎**。
 
 ---
 
-## 核心思路
+## 产品功能用例
 
-患者每天写健康日记（自然语言），系统将日记存入 SeekDB，同时建立：
+### 用例一：每日风险检测
 
-- 📝 **全文索引**（IK 中文分词）— 捕捉精确症状词："口渴"、"头晕"、"夜尿"
-- 🧠 **向量索引**（HNSW cosine 384 维）— 语义相似匹配："眼前发花" ≈ "视力模糊"
-- 🗂 **结构化字段**（SQL）— 血糖值、时间窗口、危险标签
+用户用自然语言描述今天的感受，可附上血糖和血压数值。系统在数秒内完成三路分析，给出一个 0–100 的综合风险评分，并说明评分构成。
 
-当用户输入今天的感受，系统在历史记录中寻找**最相似的"危险事件前 30 天"片段**。
-如果命中大量历史预警记录，说明当前状态正在重复历史的危险轨迹。
+**三路分析信号：**
+
+| 信号 | 含义 | 触发条件 |
+|------|------|----------|
+| 🔍 历史相似度 | 今天的描述与历史人群"危险事件前 30 天"的相似程度 | 始终生效 |
+| 📈 近期变化趋势 | 用户自身血糖和描述的近 7 日变化方向 | 积累 3+ 条记录后 |
+| 🧬 与平日的差异 | 今天的状态与用户自身平时健康状态的偏离程度 | 积累 7+ 条记录后 |
+
+随着记录增多，系统会从「人群参考模式」切换到「个人模型模式」，评估越来越个性化。
+
+---
+
+### 用例二：健康趋势档案
+
+「我的档案」Tab 聚合用户自身的健康历史，提供：
+
+- **风险评分趋势图**：所有记录的历史风险走势，危险/稳定节点一眼可见
+- **血糖变化曲线**：叠加临界参考线，直观看出控糖状态
+- **历史记录表**：近 30 条日记的日期、风险评分、血糖、日记摘要
+- **系统学习进度**：已收集的预警反馈数、预测相符率、当前矫正方向（见用例四）
+
+---
+
+### 用例三：健康实验
+
+用户可以设计一个自己的"变量控制实验"，比如：
+
+> 「我想知道晚饭后散步 30 分钟，是否真的影响我的血糖和整体感受。」
+
+**操作流程：**
+1. 创建实验，写下观察内容（"晚饭后步行 30 分钟"）和预期效果
+2. 每天打卡——今天执行了 ✓ 还是跳过了 ✗
+3. 积累足够数据后（3+ 执行日 + 2+ 对照日），系统对比两组结果：
+   - **客观指标**：执行日 vs. 未执行日的平均风险值和血糖
+   - **主观感受**：两种状态下日记描述的整体差异程度
+
+所有实验结论均为相关性分析，不代表因果关系。
+
+---
+
+### 用例四：预警反馈闭环
+
+每次评估 48 小时后，系统会主动询问：**「当时的预警准不准？」**
+
+用户回答「确实变差了 / 没明显变化 / 反而好转了」，系统积累反馈后自动调整**个人敏感度**：
+
+```
+如果历史上总是漏报 → 自动调高灵敏度（最多 +30%）
+如果历史上偶有过度预警 → 自动降低灵敏度（最多 -30%）
+```
+
+积累 5 条以上反馈后生效，矫正系数范围 `[0.7, 1.3]`，下次评分自动应用。「我的档案」Tab 实时显示学习进度。
+
+---
+
+## SeekDB 在本项目中的作用
+
+SeekDB 是 OceanBase 推出的 AI 原生数据库，兼容 MySQL 协议，同时内置全文索引、向量索引和关系型 SQL，三者共用一个存储引擎，可在**一条 SQL** 内完成混合查询。本项目所有核心分析均建立在这一能力之上。
+
+### 作用一：人群轨迹对比（混合搜索）
+
+这是本项目最核心的 SeekDB 使用场景。`patient_diaries` 表存储 4,500 条合成历史患者记录，同时建立：
+
+- **全文索引（IK 中文分词）**：精确匹配症状关键词，例如"口渴""头晕""夜尿"
+- **向量索引（HNSW）**：捕捉语义等价表达，例如"眼前发花"和"视力模糊"语义相近
+
+每次用户提交日记，系统发出 **一条** `DBMS_HYBRID_SEARCH.SEARCH` SQL，同时完成关键词匹配 + 含义理解 + SQL 字段过滤（`is_pre_danger`、`days_to_danger`），在历史人群中找到最相似的片段，并计算其中"危险事件前 30 天"的比例作为轨迹风险信号。
 
 ```
 用户输入："最近总觉得眼前发花，晚上总是要起来喝水"
           │
-          ▼
-    SeekDB DBMS_HYBRID_SEARCH.SEARCH
-          │
-    ┌─────┴──────────────────────────────────┐
-    │  BM25 关键词：「喝水」→ 多饮相关记录    │
-    │  Vector cosine：「眼前发花」≈ 「视力模糊」│
+          ▼  一次 SeekDB 混合查询
+    ┌─────────────────────────────────────────┐
+    │  关键词匹配：「喝水」→ 多饮相关记录        │
+    │  含义理解：「眼前发花」≈ 「视力模糊」      │
     │  SQL 过滤：is_pre_danger = 1            │
     └─────────────────────────────────────────┘
           │
-    风险评分 + AI 分析报告
+    危险期命中率 → 历史相似度评分（0-100）
+```
+
+**混合搜索为何优于单一方式：**
+
+| 方式 | 能力 | 局限 |
+|------|------|------|
+| 纯关键词 | 精确匹配医学术语 | 漏召回同义描述（"眼前发花"≠"视力模糊"） |
+| 纯含义理解 | 捕捉语义等价表达 | 难以区分"普通疲惫"和"高血糖疲惫" |
+| **SeekDB 混合** | **两者互补，精准识别预警信号** | — |
+
+---
+
+### 作用二：个人趋势分析（SQL 时序查询）
+
+`user_diaries` 表存储用户自己的每日记录（日记文本、血糖、血压、风险评分等）。系统通过普通 SQL 查询最近 7 条记录，在应用层计算血糖斜率和描述变化趋势，生成「近期变化」信号。
+
+SeekDB 的 MySQL 兼容性让这部分分析与混合搜索复用同一套连接和表设计，无需切换系统。
+
+---
+
+### 作用三：个人基线计算（向量存储）
+
+`user_diaries` 中每条记录都存有一个 384 维的向量（日记文字经语言模型编码）。`user_baseline` 表存储所有历史向量的**质心**（算术平均）。
+
+每次提交新日记时，系统计算今日向量与质心的余弦距离，距离越大说明今天的状态与平时差异越大，转化为「与平日的差异」信号。
+
+向量直接存在 SeekDB 的 `VECTOR(384)` 列中，写入和读取均通过标准 SQL 完成。
+
+---
+
+### 作用四：健康实验分析（SQL JOIN + 向量质心对比）
+
+实验分析是 SeekDB 同时发挥 SQL 和向量能力的第二个典型场景。
+
+`experiment_logs` 表记录每天是否执行实验，通过 `JOIN user_diaries` 完成两层分析：
+
+```sql
+-- ① SQL 层：均值对比
+SELECT el.executed,
+       AVG(ud.risk_score)    AS avg_risk,
+       AVG(ud.glucose_level) AS avg_glucose
+FROM experiment_logs el
+JOIN user_diaries ud ON el.diary_id = ud.id
+WHERE el.experiment_id = ?
+GROUP BY el.executed;
+```
+
+```
+-- ② 向量层：主观感受差异
+取执行日所有 diary_embedding → 计算质心 A
+取未执行日所有 diary_embedding → 计算质心 B
+余弦距离(A, B) 越大 = 两种状态下的感受描述差异越明显
 ```
 
 ---
 
-## 环境要求
+### 作用五：反馈矫正（结构化存储 + JOIN 统计）
 
-| 工具 | 版本 | 用途 |
-|------|------|------|
-| Python | 3.10+ | 运行代码 |
-| Docker | 24+ | 运行 SeekDB |
-| Docker Compose | v2 | 一键启动 |
+`risk_feedbacks` 表存储每次用户对历史预警的回访结果。系统通过 SQL JOIN 统计漏报率和误报率：
+
+```sql
+SELECT ud.risk_level, rf.actual_outcome
+FROM risk_feedbacks rf
+JOIN user_diaries ud ON rf.diary_id = ud.id
+```
+
+依此计算个人敏感度矫正系数，在下次评分时作为乘数应用到最终结果上。
+
+---
+
+## 数据库表设计总览
+
+```
+SeekDB（6 张表）
+│
+├── patient_diaries       历史人群数据（4,500 条合成记录）
+│   ├── FULLTEXT INDEX    IK 中文分词，匹配症状关键词
+│   └── VECTOR   INDEX    HNSW 384 维，匹配描述含义
+│
+├── user_diaries          用户自己的每日记录
+│   ├── FULLTEXT INDEX    支持未来关键词回溯
+│   └── VECTOR   INDEX    存储个人日记向量
+│
+├── user_baseline         个人健康基线（向量质心，每次记录后刷新）
+│
+├── experiments           健康实验元数据
+│
+├── experiment_logs       每日执行打卡记录（关联 user_diaries）
+│
+└── risk_feedbacks        用户对历史预警的反馈（关联 user_diaries）
+```
 
 ---
 
@@ -49,24 +192,31 @@
 git clone https://github.com/ErinYu/seekdb-health-demo.git
 cd seekdb-health-demo
 
-# 2. 安装 Python 依赖
+# 2. 安装依赖
 pip install -r requirements.txt
 
-# 3. 配置环境变量（可选：填入 Anthropic API key 以启用 Claude 分析）
+# 3. 配置环境变量（可选：填入 Anthropic API key 以启用 AI 分析）
 cp .env.example .env
-# 编辑 .env，按需填入 ANTHROPIC_API_KEY
 
 # 4. 启动 SeekDB
 docker-compose up -d
-# 等待约 30 秒让 SeekDB 完成初始化
+# 等待约 30 秒完成初始化
 
-# 5. 初始化数据库（约 3~5 分钟，含模型下载 + embedding）
-python scripts/init_db.py
+# 5. 初始化数据库（含模型下载 + 数据写入，约 3~5 分钟）
+python3 scripts/init_db.py
 
-# 6. 启动 Gradio UI
-python app.py
+# 6. 启动应用
+python3 app.py
 # 浏览器打开 http://localhost:7860
 ```
+
+**环境要求：**
+
+| 工具 | 版本 |
+|------|------|
+| Python | 3.10+ |
+| Docker | 24+ |
+| Docker Compose | v2 |
 
 ---
 
@@ -74,68 +224,26 @@ python app.py
 
 ```
 seekdb-health-demo/
-├── app.py                    # Gradio UI 入口
+├── app.py                    # Gradio UI（3 个 Tab）
 ├── docker-compose.yml        # SeekDB 容器配置
 ├── requirements.txt
 ├── .env.example
 ├── scripts/
-│   └── init_db.py           # 一键初始化数据库
+│   └── init_db.py            # 一键初始化数据库
 └── src/
-    ├── db.py                 # 数据库连接管理
-    ├── schema.py             # 建表 DDL（含向量 + 全文索引）
+    ├── db.py                 # 数据库连接与重试
+    ├── schema.py             # 6 张表的 DDL
     ├── data_generator.py     # 合成患者数据生成器
-    ├── ingest.py             # Embedding + 批量写入 SeekDB
+    ├── ingest.py             # 向量编码 + 批量写入
+    ├── embedder.py           # 语言模型单例（384 维）
     ├── searcher.py           # 混合搜索 + 风险评分
-    └── agent.py              # LLM 风险分析（Claude / 规则兜底）
-```
-
----
-
-## SeekDB 关键技术
-
-### 表结构（混合索引设计）
-
-```sql
-CREATE TABLE patient_diaries (
-    id                INT AUTO_INCREMENT PRIMARY KEY,
-    patient_id        INT,
-    diary_date        DATE,
-    diary_text        TEXT,              -- 自然语言日记
-    symptoms_keywords VARCHAR(500),      -- 症状关键词（IK 分词友好）
-    glucose_level     FLOAT,             -- 结构化血糖值
-    is_pre_danger     TINYINT(1),        -- 危险事件前30天标签
-    days_to_danger    INT,               -- 距危险事件天数
-    diary_embedding   VECTOR(384),       -- 语义向量
-
-    FULLTEXT INDEX idx_diary_fts(diary_text)     WITH PARSER ik,
-    FULLTEXT INDEX idx_kw_fts(symptoms_keywords) WITH PARSER ik,
-    VECTOR   INDEX idx_diary_vec(diary_embedding)
-        WITH (distance=cosine, type=hnsw, lib=vsag)
-);
-```
-
-### 混合搜索查询
-
-```sql
-SET @parm = '{
-  "query": {
-    "bool": {
-      "should": [
-        {"match": {"diary_text": "口渴 头晕 夜尿频繁"}},
-        {"match": {"symptoms_keywords": "口渴 多尿 视力模糊"}}
-      ]
-    }
-  },
-  "knn": {
-    "field": "diary_embedding",
-    "k": 15,
-    "query_vector": [0.021, -0.034, ...]
-  },
-  "_source": ["patient_id", "diary_text", "glucose_level",
-              "is_pre_danger", "_keyword_score", "_semantic_score"]
-}';
-
-SELECT DBMS_HYBRID_SEARCH.SEARCH('patient_diaries', @parm);
+    ├── user_store.py         # 用户日记 CRUD + 基线刷新
+    ├── trend_analyzer.py     # 7 日趋势分析（线性回归）
+    ├── baseline.py           # 向量质心距离计算
+    ├── scorer.py             # 三路信号融合评分
+    ├── experiments.py        # 健康实验 CRUD + 分析
+    ├── feedback.py           # 预警反馈 + 敏感度矫正
+    └── agent.py              # LLM 分析（Claude / 规则兜底）
 ```
 
 ---
@@ -144,33 +252,12 @@ SELECT DBMS_HYBRID_SEARCH.SEARCH('patient_diaries', @parm);
 
 所有数据均为**完全合成数据**，由 `src/data_generator.py` 程序化生成：
 
-- 100 名虚拟患者（40 名将在模拟期结束时出现血糖危机，60 名保持稳定）
-- 每位患者 45 天的日记记录（共约 4,500 条）
-- 危机患者在最后 25 天进入"预警期"（血糖值 S 曲线上升至 210–320 mg/dL）
-- 日记文本基于医学文献中的症状描述模板生成，不含任何真实个人信息
+- 100 名虚拟患者（40 名在模拟期结束时出现血糖危机，60 名保持稳定）
+- 每位患者 45 天记录，共约 4,500 条
+- 危机患者最后 25 天血糖按 S 曲线上升至 210–320 mg/dL
+- 日记文本基于医学文献症状描述模板生成，不含任何真实个人信息
 
-血糖范围参考：ADA Standards of Medical Care in Diabetes (2024)
-症状描述参考：WHO Diabetes Fact Sheet, 中国 2 型糖尿病防治指南 (2020)
-
----
-
-## 演示效果
-
-| 输入场景 | 风险评分 | 说明 |
-|---------|---------|------|
-| "今天状态很好，血糖控制不错" | 0–25 | 语义向量接近"稳定期"历史记录 |
-| "有些疲劳口干，下午犯困" | 30–55 | 部分预警期特征，需关注 |
-| "头晕目眩，大量饮水，夜间多次如厕，视力模糊" | 65–95 | 高度匹配历史预警前期轨迹 |
-
----
-
-## 为什么混合搜索在此场景下优于单一方式？
-
-| 检索方式 | 优势 | 劣势 |
-|---------|------|------|
-| 纯关键词（BM25） | 精确匹配医学术语 | 漏召回同义表达（"眼前发花"≠"视力模糊"） |
-| 纯向量（HNSW） | 捕捉语义等价表达 | 无法区分"普通疲惫"和"高血糖疲惫" |
-| **混合（SeekDB）** | **两者互补，精准识别预警信号** | — |
+参考来源：ADA Standards of Medical Care in Diabetes (2024)、WHO Diabetes Fact Sheet、中国 2 型糖尿病防治指南（2020）
 
 ---
 
