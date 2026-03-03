@@ -10,6 +10,8 @@ References used for physiological ranges:
   • NHANES public summary statistics
 """
 
+from __future__ import annotations
+
 import random
 import math
 from datetime import date, timedelta

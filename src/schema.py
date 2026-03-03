@@ -127,20 +127,9 @@ CREATE TABLE IF NOT EXISTS user_profile (
 )
 """
 
-# ── Emotion data columns (Phase 3A) ────────────────────────────────────────
-ALTER_USER_DIARIES_EMOTION = """
-ALTER TABLE user_diaries
-ADD COLUMN IF NOT EXISTS emotion_score FLOAT,
-ADD COLUMN IF NOT EXISTS anxiety_score FLOAT
-"""
-
-ALTER_USER_PROFILE_EMOTION = """
-ALTER TABLE user_profile
-ADD COLUMN IF NOT EXISTS emotion_risk_coupling FLOAT DEFAULT 0.0,
-ADD COLUMN IF NOT EXISTS emotion_volatility FLOAT DEFAULT 0.0,
-ADD COLUMN IF NOT EXISTS emotion_amplification FLOAT DEFAULT 1.0,
-ADD COLUMN IF NOT EXISTS emotion_active TINYINT(1) DEFAULT 0
-"""
+# ── Emotion columns are added at runtime via _ensure_columns() in ingest.py ──
+# OceanBase does not support ADD COLUMN IF NOT EXISTS; column existence is
+# checked against INFORMATION_SCHEMA.COLUMNS before each ALTER TABLE.
 
 CREATE_EMOTION_COUPLING = """
 CREATE TABLE IF NOT EXISTS emotion_coupling (

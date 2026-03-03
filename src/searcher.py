@@ -15,6 +15,8 @@ Why hybrid beats either alone in this clinical setting:
                  anchors on specific clinical tokens ("起来喝水"≈"多饮")
 """
 
+from __future__ import annotations
+
 import json
 from dataclasses import dataclass
 
