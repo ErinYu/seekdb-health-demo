@@ -103,6 +103,17 @@ CREATE TABLE IF NOT EXISTS experiment_logs (
 )
 """
 
+# ── Prediction feedback ───────────────────────────────────────────────────
+CREATE_RISK_FEEDBACKS = """
+CREATE TABLE IF NOT EXISTS risk_feedbacks (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    diary_id        INT         NOT NULL,
+    actual_outcome  VARCHAR(20) NOT NULL,
+    submitted_at    TIMESTAMP   DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_diary (diary_id)
+)
+"""
+
 # Back-compat alias used by the original ingest.py
 CREATE_TABLE = CREATE_POPULATION_TABLE
 DROP_TABLE   = "DROP TABLE IF EXISTS patient_diaries"

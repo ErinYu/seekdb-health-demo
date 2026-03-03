@@ -62,22 +62,21 @@ def get_baseline_label(entry_count: int) -> dict:
         remaining = MIN_ENTRIES - entry_count
         return {
             "mode": "population",
-            "label": f"人群对比模式（还需 {remaining} 条记录建立个人基线）",
+            "label": f"人群参考模式（还需 {remaining} 次记录）",
             "color": "#f59e0b",
             "icon": "🟡",
             "description": (
-                f"当前已记录 {entry_count} 条日记。"
-                f"再记录 {remaining} 条后系统将切换为个人模型，"
-                "基于你自己的健康基线进行偏差检测。"
+                f"当前已记录 {entry_count} 次。"
+                f"再记录 {remaining} 次后，系统将开始把你与你自己的平日状态进行对比，评估会更加个性化。"
             ),
         }
     return {
         "mode": "personal",
-        "label": f"个人模型模式（已建立 {entry_count} 条健康档案）",
+        "label": f"个人模型模式（已积累 {entry_count} 条健康记录）",
         "color": "#22c55e",
         "icon": "🟢",
         "description": (
-            f"已根据你的 {entry_count} 条历史记录建立个人健康基线。"
-            "系统同时比对人群轨迹、个人趋势和基线偏差三路信号。"
+            f"已根据你的 {entry_count} 条历史记录建立了个人健康档案。"
+            "系统会同时参考历史人群记录、你最近的状态变化，以及和你自身平时的对比。"
         ),
     }

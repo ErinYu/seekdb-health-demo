@@ -11,7 +11,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
-import matplotlib.dates as mdates
 from datetime import datetime
 import gradio as gr
 
@@ -31,6 +30,11 @@ from src.experiments import (
     create_experiment, get_active_experiments, get_all_experiments,
     log_day, abandon_experiment, analyze_experiment,
     Experiment, ExperimentResult,
+)
+from src.feedback import (
+    get_pending_feedbacks, submit_feedback,
+    get_calibration_stats, get_sensitivity_factor,
+    PendingFeedback, MIN_FEEDBACK,
 )
 
 
@@ -52,7 +56,7 @@ _HAS_CJK = _setup_font()
 # ── HTML helpers ───────────────────────────────────────────────────────────
 
 def _mode_badge(entry_count: int) -> str:
-    from src.baseline import get_baseline_label, MIN_ENTRIES
+    from src.baseline import get_baseline_label
     meta = get_baseline_label(entry_count)
     color = meta["color"]
     icon  = meta["icon"]
@@ -82,7 +86,7 @@ def _risk_badge(score: float, level: str) -> str:
       <div style="font-size:1.25rem;font-weight:700;color:{c};">
         {labels.get(level, level)}
       </div>
-      <div style="font-size:0.82rem;color:#64748b;">综合风险评分</div>
+      <div style="font-size:0.82rem;color:#64748b;">综合风险评估结果</div>
     </div>
     <div style="margin-left:auto;font-size:2.4rem;font-weight:800;color:{c};">
       {score:.0f}
@@ -94,7 +98,7 @@ def _risk_badge(score: float, level: str) -> str:
   </div>
   <div style="display:flex;justify-content:space-between;
               font-size:0.72rem;color:#94a3b8;margin-top:3px;">
-    <span>0 — 安全</span><span>50 — 注意</span><span>100 — 危险</span>
+    <span>0 — 安全</span><span>50 — 留意</span><span>100 — 需关注</span>
   </div>
 </div>"""
 
@@ -115,22 +119,22 @@ def _score_breakdown(ds: DetailedScore) -> str:
     {f'<div style="font-size:0.73rem;color:#94a3b8;margin-top:2px;">{note}</div>' if note else ""}
   </div>"""
 
-    base_val  = ds.baseline_score
-    base_note = "" if base_val >= 0 else "（需 7+ 条记录后启用）"
+    base_val     = ds.baseline_score
+    base_note    = "" if base_val >= 0 else "（积累更多记录后开启）"
     base_display = max(0, base_val)
 
     html = f"""
 <div style="font-family:sans-serif;padding:14px 16px;border-radius:10px;
             background:#f8fafc;border:1px solid #e2e8f0;margin-top:8px;">
   <div style="font-size:0.9rem;font-weight:600;color:#374151;margin-bottom:10px;">
-    风险评分构成
+    评估构成
   </div>
-  {bar("🔍 轨迹相似度", ds.trajectory_score, "#3b82f6",
+  {bar("🔍 历史相似度",   ds.trajectory_score, "#3b82f6",
        ds.trajectory_explanation[:80]+"…" if len(ds.trajectory_explanation)>80 else ds.trajectory_explanation)}
-  {bar("📈 近期趋势",   ds.trend_score,      "#f59e0b",
+  {bar("📈 近期变化趋势", ds.trend_score,       "#f59e0b",
        ds.trend_explanation[:80]+"…" if len(ds.trend_explanation)>80 else ds.trend_explanation)}
-  {bar("🧬 基线偏差",   base_display,        "#8b5cf6" if base_val>=0 else "#d1d5db",
-       ds.baseline_explanation[:80]+"…" if len(ds.baseline_explanation)>80 else ds.baseline_explanation)}
+  {bar("🧬 与平日的差异", base_display,         "#8b5cf6" if base_val>=0 else "#d1d5db",
+       (ds.baseline_explanation[:80]+"…" if len(ds.baseline_explanation)>80 else ds.baseline_explanation) or base_note)}
 </div>"""
     return html
 
@@ -138,9 +142,12 @@ def _score_breakdown(ds: DetailedScore) -> str:
 # ── Charts ─────────────────────────────────────────────────────────────────
 
 def _comparison_chart(ds: DetailedScore):
-    from src.searcher import assess_risk as _ar
-    methods = ["Keyword\n(BM25)", "Vector\n(HNSW)", "Hybrid\n(SeekDB)"]
-    ratios  = [
+    if _HAS_CJK:
+        methods = ["关键词\n匹配", "含义\n理解", "综合\n对比"]
+    else:
+        methods = ["Keywords", "Semantic", "Combined"]
+
+    ratios = [
         getattr(ds, "_kw_ratio", 0) * 100,
         getattr(ds, "_vec_ratio", 0) * 100,
         getattr(ds, "_hyb_ratio", 0) * 100,
@@ -149,8 +156,8 @@ def _comparison_chart(ds: DetailedScore):
     fig, ax = plt.subplots(figsize=(4.8, 3.0))
     bars = ax.bar(methods, ratios, color=colors, width=0.45, zorder=3)
     ax.set_ylim(0, 115)
-    ax.set_ylabel("Pre-danger records hit (%)", fontsize=8)
-    ax.set_title("Search method comparison", fontsize=9)
+    ax.set_ylabel("历史预警期命中率 (%)" if _HAS_CJK else "Pre-danger hit rate (%)", fontsize=8)
+    ax.set_title("三种方式对比" if _HAS_CJK else "Search method comparison", fontsize=9)
     ax.yaxis.grid(True, linestyle="--", alpha=0.4, zorder=0)
     ax.set_axisbelow(True)
     ax.spines[["top","right"]].set_visible(False)
@@ -165,8 +172,9 @@ def _history_chart(diaries):
     """Risk score trend line for the My Profile tab."""
     if not diaries:
         fig, ax = plt.subplots(figsize=(7, 2.5))
-        ax.text(0.5, 0.5, "No diary entries yet", ha="center", va="center",
-                transform=ax.transAxes, color="#9ca3af", fontsize=11)
+        ax.text(0.5, 0.5, "暂无记录" if _HAS_CJK else "No entries yet",
+                ha="center", va="center", transform=ax.transAxes,
+                color="#9ca3af", fontsize=11)
         ax.axis("off")
         return fig
 
@@ -183,8 +191,8 @@ def _history_chart(diaries):
     ax.axhline(35, color="#f59e0b", linewidth=0.8, linestyle="--", alpha=0.5)
     ax.axhline(60, color="#ef4444", linewidth=0.8, linestyle="--", alpha=0.5)
     ax.set_ylim(0, 105)
-    ax.set_ylabel("Risk Score", fontsize=8)
-    ax.set_title("My Risk Score Trend", fontsize=9)
+    ax.set_ylabel("风险评分" if _HAS_CJK else "Risk Score", fontsize=8)
+    ax.set_title("我的风险评分趋势" if _HAS_CJK else "My Risk Score Trend", fontsize=9)
     ax.yaxis.grid(True, linestyle="--", alpha=0.3)
     ax.set_axisbelow(True)
     ax.spines[["top","right"]].set_visible(False)
@@ -202,11 +210,13 @@ def _glucose_chart(points):
     values = [p[1] for p in points]
     fig, ax = plt.subplots(figsize=(7, 2.5))
     ax.plot(dates, values, color="#60a5fa", linewidth=2, marker="o", markersize=4)
-    ax.axhline(126, color="#f59e0b", linewidth=0.8, linestyle="--", alpha=0.6, label="Pre-diabetic threshold")
-    ax.axhline(180, color="#ef4444", linewidth=0.8, linestyle="--", alpha=0.6, label="High glucose threshold")
+    ax.axhline(126, color="#f59e0b", linewidth=0.8, linestyle="--", alpha=0.6,
+               label="偏高临界值" if _HAS_CJK else "Pre-diabetic")
+    ax.axhline(180, color="#ef4444", linewidth=0.8, linestyle="--", alpha=0.6,
+               label="明显偏高" if _HAS_CJK else "High glucose")
     ax.set_ylim(60, max(values) * 1.1 + 20)
-    ax.set_ylabel("Glucose (mg/dL)", fontsize=8)
-    ax.set_title("My Glucose Readings", fontsize=9)
+    ax.set_ylabel("血糖 (mg/dL)" if _HAS_CJK else "Glucose (mg/dL)", fontsize=8)
+    ax.set_title("我的血糖记录" if _HAS_CJK else "My Glucose Readings", fontsize=9)
     ax.legend(fontsize=7)
     ax.yaxis.grid(True, linestyle="--", alpha=0.3)
     ax.set_axisbelow(True)
@@ -221,13 +231,9 @@ def _glucose_chart(points):
 
 def _full_analysis(diary_text: str, glucose: float | None, bp: int | None) -> DetailedScore:
     """
-    Run the full 3-signal pipeline:
-      1. Population hybrid search  (SeekDB DBMS_HYBRID_SEARCH)
-      2. Personal trend analysis   (SQL time-series over user_diaries)
-      3. Personal baseline check   (cosine distance from stored centroid)
-    Fuse into a DetailedScore.
+    Run the full 3-signal pipeline and fuse into a DetailedScore.
+    Applies personal calibration factor if enough feedback has been collected.
     """
-    # Embed once, reuse everywhere
     emb = embed(diary_text)
 
     # 1. Population trajectory
@@ -246,13 +252,16 @@ def _full_analysis(diary_text: str, glucose: float | None, bp: int | None) -> De
     else:
         base_score = None
 
-    # Fuse
-    ds = fuse(assessment, trend, base_score, entry_count)
+    # 4. Personal calibration from feedback history
+    calibration_factor = get_sensitivity_factor()
 
-    # Carry comparison ratios for the chart (attach as dynamic attrs)
-    ds._kw_ratio  = assessment.keyword_only_pre_danger_ratio
-    ds._vec_ratio = assessment.vector_only_pre_danger_ratio
-    ds._hyb_ratio = assessment.hybrid_pre_danger_ratio
+    # Fuse
+    ds = fuse(assessment, trend, base_score, entry_count, calibration_factor)
+
+    # Carry comparison ratios and raw objects for later use
+    ds._kw_ratio   = assessment.keyword_only_pre_danger_ratio
+    ds._vec_ratio  = assessment.vector_only_pre_danger_ratio
+    ds._hyb_ratio  = assessment.hybrid_pre_danger_ratio
     ds._assessment = assessment
     ds._emb        = emb
 
@@ -280,7 +289,7 @@ def run_check(diary_text: str, glucose_val: float | None, bp_val: int | None):
     except Exception as e:
         err = (f"<div style='padding:12px;background:#fef2f2;border-radius:8px;"
                f"border:1px solid #fca5a5;color:#b91c1c'>"
-               f"<b>错误</b>：{e}<br>请确认 SeekDB 已启动：<code>docker-compose up -d</code>"
+               f"<b>连接出错</b>：{e}<br>请确认 SeekDB 已启动：<code>docker-compose up -d</code>"
                f"</div>")
         return err, None, None, [], "", None
 
@@ -300,36 +309,136 @@ def run_check(diary_text: str, glucose_val: float | None, bp_val: int | None):
     # AI analysis
     analysis = generate_analysis(diary_text, ds._assessment)
 
-    # Mode badge
-    mode_html = _mode_badge(ds.entry_count + 1)  # +1 because we just saved
-
-    # Risk badge + breakdown
-    risk_html = _risk_badge(ds.final_score, ds.risk_level)
+    # Mode badge + risk badge + breakdown
+    mode_html      = _mode_badge(ds.entry_count + 1)
+    risk_html      = _risk_badge(ds.final_score, ds.risk_level)
     breakdown_html = _score_breakdown(ds)
-    combined_html = mode_html + risk_html + breakdown_html
+    combined_html  = mode_html + risk_html + breakdown_html
 
     # Comparison chart
     chart = _comparison_chart(ds)
 
-    # Top hits table
+    # Top hits table (simplified: no raw score columns)
     hits_table = []
     for h in ds._assessment.top_hits:
-        status = "⚠️ 预警前期" if h.is_pre_danger else "✅ 稳定期"
-        days_info = f"距危险还有 {h.days_to_danger} 天" if h.days_to_danger >= 0 else "—"
+        status   = "⚠️ 曾有异常" if h.is_pre_danger else "✅ 平稳时期"
+        days_info = f"异常出现前 {h.days_to_danger} 天" if h.days_to_danger >= 0 else "—"
         hits_table.append([
             status,
-            f"{h.glucose_level:.0f}",
+            f"{h.glucose_level:.0f}" if h.glucose_level else "—",
             h.diary_text[:70] + ("…" if len(h.diary_text) > 70 else ""),
-            f"{h.keyword_score:.3f}",
-            f"{h.semantic_score:.3f}",
             days_info,
         ])
 
-    # Active experiments checkin panel (shown after diary submission)
-    active = get_active_experiments()
+    # Active experiments check-in panel
+    active        = get_active_experiments()
     exp_panel_html = _experiment_checkin_panel(active)
 
     return combined_html, chart, analysis, hits_table, analysis, ds, exp_panel_html
+
+
+# ── Feedback UI helpers ─────────────────────────────────────────────────────
+
+def _pending_feedback_html(pending: list[PendingFeedback]) -> str:
+    """Render the first pending feedback as a prompt card."""
+    if not pending:
+        return ""
+    p = pending[0]
+    level_labels = {"low": "低风险", "medium": "中等风险", "high": "高风险"}
+    level_colors = {"low": "#22c55e", "medium": "#f59e0b", "high": "#ef4444"}
+    level  = level_labels.get(p.risk_level, p.risk_level)
+    color  = level_colors.get(p.risk_level, "#6b7280")
+    excerpt = p.diary_text[:60] + ("…" if len(p.diary_text) > 60 else "")
+    remaining = len(pending) - 1
+    more_tip  = f"&nbsp;（还有 {remaining} 条待回访）" if remaining > 0 else ""
+    return f"""
+<div style="font-family:sans-serif;padding:14px 16px;border-radius:10px;
+            background:#f0f9ff;border:1px solid #bae6fd;margin-bottom:4px;">
+  <div style="font-weight:600;color:#0369a1;margin-bottom:6px;">
+    💡 上次预警结果回访{more_tip}
+  </div>
+  <div style="font-size:0.85rem;color:#374151;margin-bottom:6px;">
+    你在 <b>{p.diary_date}</b> 的记录，当时评估为
+    <span style="color:{color};font-weight:600;">「{level}」</span>
+  </div>
+  <div style="font-size:0.8rem;color:#64748b;background:#e0f2fe;padding:6px 10px;
+              border-radius:6px;margin-bottom:6px;">
+    「{excerpt}」
+  </div>
+  <div style="font-size:0.85rem;color:#374151;font-weight:500;">
+    现在回想，那段时间你的状态如何？
+  </div>
+</div>"""
+
+
+def load_feedback_section():
+    """Called on page load to check for pending feedbacks.
+    Returns: (info_html_update, diary_id, radio_row_update, btn_row_update)
+    """
+    try:
+        pending = get_pending_feedbacks()
+    except Exception:
+        return (gr.update(value="", visible=False), None,
+                gr.update(visible=False), gr.update(visible=False))
+
+    if not pending:
+        return (gr.update(value="", visible=False), None,
+                gr.update(visible=False), gr.update(visible=False))
+
+    html = _pending_feedback_html(pending)
+    return (
+        gr.update(value=html, visible=True),
+        pending[0].diary_id,
+        gr.update(visible=True),
+        gr.update(visible=True),
+    )
+
+
+def submit_feedback_handler(diary_id, outcome):
+    """Submit feedback and load the next pending one (if any).
+    Returns: (msg_update, info_html_update, diary_id, radio_row_update, btn_row_update)
+    """
+    if diary_id is None or not outcome:
+        return (
+            gr.update(value="<p style='color:#ef4444'>请先选择一个选项再提交。</p>"),
+            gr.update(), diary_id,
+            gr.update(visible=True), gr.update(visible=True),
+        )
+    outcome_map = {
+        "确实变差了": "worsened",
+        "没明显变化": "no_change",
+        "反而好转了": "improved",
+    }
+    try:
+        submit_feedback(diary_id, outcome_map.get(outcome, "no_change"))
+    except Exception as e:
+        return (
+            gr.update(value=f"<p style='color:#ef4444'>提交失败：{e}</p>"),
+            gr.update(), diary_id,
+            gr.update(visible=True), gr.update(visible=True),
+        )
+
+    try:
+        pending = get_pending_feedbacks()
+    except Exception:
+        pending = []
+
+    ok_msg = "<p style='color:#22c55e'>✅ 感谢你的反馈，系统已记录！</p>"
+    if pending:
+        new_html = _pending_feedback_html(pending)
+        return (
+            gr.update(value=ok_msg),
+            gr.update(value=new_html, visible=True),
+            pending[0].diary_id,
+            gr.update(visible=True), gr.update(visible=True),
+        )
+    no_more = ok_msg + "<p style='font-size:0.8rem;color:#64748b;'>暂无更多待回访记录。</p>"
+    return (
+        gr.update(value=no_more),
+        gr.update(value="", visible=False),
+        None,
+        gr.update(visible=False), gr.update(visible=False),
+    )
 
 
 # ── Experiment UI helpers ──────────────────────────────────────────────────
@@ -345,13 +454,13 @@ def _experiment_checkin_panel(experiments: list[Experiment]) -> str:
             background:#fffbeb;border:1px solid #fde68a;margin-bottom:8px;">
   <div style="font-weight:600;color:#92400e;">🧪 {e.name}</div>
   <div style="font-size:0.8rem;color:#78716c;margin:3px 0;">
-    测试变量：{e.variable} &nbsp;·&nbsp; 进度 {e.days_logged}/{e.target_days} 天
+    观察内容：{e.variable} &nbsp;·&nbsp; 进度 {e.days_logged}/{e.target_days} 天
   </div>
   <div style="background:#fef3c7;border-radius:99px;height:6px;margin:6px 0;">
     <div style="width:{pct}%;height:100%;background:#f59e0b;border-radius:99px;"></div>
   </div>
   <div style="font-size:0.78rem;color:#92400e;">
-    今天是否执行了「{e.variable}」？ — 请在「🧪 健康实验」标签页打卡
+    今天是否执行了「{e.variable}」？— 请在「🧪 健康实验」标签页打卡
   </div>
 </div>""")
     return (
@@ -369,47 +478,54 @@ def _experiment_result_chart(result: ExperimentResult):
     if cols == 1:
         axes = [axes, None, axes]
 
+    exec_label = "执行日" if _HAS_CJK else "Executed"
+    skip_label = "未执行日" if _HAS_CJK else "Skipped"
+    groups = [exec_label, skip_label]
+
     # Risk score
     ax = axes[0]
-    groups = ["Executed", "Skipped"]
     vals   = [result.avg_risk_executed, result.avg_risk_skipped]
     colors = ["#86efac", "#fca5a5"]
     bars = ax.bar(groups, vals, color=colors, width=0.45)
     ax.set_ylim(0, 105)
-    ax.set_title("Risk Score", fontsize=9)
-    ax.set_ylabel("Avg Risk (0-100)", fontsize=8)
+    ax.set_title("风险评分对比" if _HAS_CJK else "Risk Score", fontsize=9)
+    ax.set_ylabel("平均风险值 (0-100)" if _HAS_CJK else "Avg Risk (0-100)", fontsize=8)
     ax.spines[["top","right"]].set_visible(False)
     ax.yaxis.grid(True, linestyle="--", alpha=0.4); ax.set_axisbelow(True)
     for b, v in zip(bars, vals):
-        ax.text(b.get_x()+b.get_width()/2, v+1, f"{v:.0f}", ha="center", fontsize=10, fontweight="bold")
+        ax.text(b.get_x()+b.get_width()/2, v+1, f"{v:.0f}",
+                ha="center", fontsize=10, fontweight="bold")
 
     # Glucose (if available)
     if has_glucose:
         ax2 = axes[1]
         gvals = [result.avg_glucose_executed, result.avg_glucose_skipped]
         bars2 = ax2.bar(groups, gvals, color=colors, width=0.45)
-        ax2.set_title("Glucose (mg/dL)", fontsize=9)
-        ax2.set_ylabel("Avg Glucose", fontsize=8)
+        ax2.set_title("血糖对比 (mg/dL)" if _HAS_CJK else "Glucose (mg/dL)", fontsize=9)
+        ax2.set_ylabel("平均血糖" if _HAS_CJK else "Avg Glucose", fontsize=8)
         ax2.spines[["top","right"]].set_visible(False)
         ax2.yaxis.grid(True, linestyle="--", alpha=0.4); ax2.set_axisbelow(True)
         for b, v in zip(bars2, gvals):
-            ax2.text(b.get_x()+b.get_width()/2, v+1, f"{v:.0f}", ha="center", fontsize=10, fontweight="bold")
+            ax2.text(b.get_x()+b.get_width()/2, v+1, f"{v:.0f}",
+                     ha="center", fontsize=10, fontweight="bold")
 
-    # Semantic distance gauge
+    # Subjective experience difference gauge
     ax3 = axes[-1]
     ax3.axis("off")
     if result.semantic_distance is not None:
         sd = result.semantic_distance
         level_color = "#ef4444" if sd > 0.15 else ("#f59e0b" if sd > 0.05 else "#22c55e")
-        label = "Significant" if sd > 0.15 else ("Moderate" if sd > 0.05 else "Minimal")
-        ax3.text(0.5, 0.65, f"{sd:.3f}", ha="center", va="center",
-                 fontsize=26, fontweight="bold", color=level_color,
+        if _HAS_CJK:
+            diff_label = "差异明显" if sd > 0.15 else ("有所不同" if sd > 0.05 else "相差不大")
+            sub_label  = "两种状态的感受差异"
+        else:
+            diff_label = "Significant" if sd > 0.15 else ("Moderate" if sd > 0.05 else "Minimal")
+            sub_label  = "Subjective experience diff"
+        ax3.text(0.5, 0.65, diff_label, ha="center", va="center",
+                 fontsize=20, fontweight="bold", color=level_color,
                  transform=ax3.transAxes)
-        ax3.text(0.5, 0.38, f"Semantic distance\n({label})", ha="center", va="center",
+        ax3.text(0.5, 0.35, sub_label, ha="center", va="center",
                  fontsize=8, color="#64748b", transform=ax3.transAxes)
-        ax3.text(0.5, 0.12, "diary embedding difference\nexecuted vs skipped days",
-                 ha="center", va="center", fontsize=7, color="#94a3b8",
-                 transform=ax3.transAxes)
 
     plt.tight_layout()
     return fig
@@ -431,7 +547,7 @@ def _timeline_html(result: ExperimentResult) -> str:
     return (
         "<div style='font-family:sans-serif;padding:10px 14px;border-radius:10px;"
         "background:#f8fafc;border:1px solid #e2e8f0;margin-top:8px;'>"
-        "<div style='font-size:0.82rem;color:#64748b;margin-bottom:6px;'>执行日历</div>"
+        "<div style='font-size:0.82rem;color:#64748b;margin-bottom:6px;'>执行记录</div>"
         "<div style='display:flex;gap:6px;flex-wrap:wrap;'>"
         + "".join(dots)
         + "</div><div style='font-size:0.72rem;color:#94a3b8;margin-top:5px;'>"
@@ -443,7 +559,7 @@ def _timeline_html(result: ExperimentResult) -> str:
 
 def create_exp_handler(name, variable, hypothesis, target_days):
     if not name.strip() or not variable.strip():
-        return gr.update(value="<p style='color:#ef4444'>请填写实验名称和测试变量</p>"), \
+        return gr.update(value="<p style='color:#ef4444'>请填写实验名称和观察内容</p>"), \
                *_refresh_exp_ui()
     try:
         create_experiment(name.strip(), variable.strip(), hypothesis.strip(), int(target_days))
@@ -455,10 +571,9 @@ def create_exp_handler(name, variable, hypothesis, target_days):
 
 def _refresh_exp_ui():
     """Return (active_html, all_choices, all_results_html) for UI refresh."""
-    active = get_active_experiments()
+    active   = get_active_experiments()
     all_exps = get_all_experiments()
 
-    # Active experiments panel
     if active:
         cards = []
         for e in active:
@@ -469,11 +584,11 @@ def _refresh_exp_ui():
   <div style="display:flex;justify-content:space-between;align-items:center;">
     <span style="font-weight:700;color:#14532d;">🧪 {e.name}</span>
     <span style="font-size:0.78rem;background:#dcfce7;color:#16a34a;
-                 padding:2px 8px;border-radius:99px;">{e.status}</span>
+                 padding:2px 8px;border-radius:99px;">进行中</span>
   </div>
   <div style="font-size:0.82rem;color:#64748b;margin:4px 0;">
-    变量：{e.variable}<br>
-    假设：{e.hypothesis or '未填写'}
+    观察内容：{e.variable}<br>
+    预期效果：{e.hypothesis or '未填写'}
   </div>
   <div style="font-size:0.78rem;color:#374151;margin-top:4px;">
     进度：{e.days_logged}/{e.target_days} 天（{pct}%）
@@ -481,15 +596,14 @@ def _refresh_exp_ui():
   <div style="background:#e2e8f0;border-radius:99px;height:6px;margin:4px 0;">
     <div style="width:{pct}%;height:100%;background:#22c55e;border-radius:99px;"></div>
   </div>
-  <div style="font-size:0.75rem;color:#6b7280;">实验 ID: {e.id}</div>
+  <div style="font-size:0.75rem;color:#6b7280;">实验编号: {e.id}</div>
 </div>""")
         active_html = "".join(cards)
     else:
         active_html = "<p style='color:#9ca3af'>暂无进行中的实验。</p>"
 
-    # Dropdown choices for result view and log
-    choices = [(f"[{e.status}] {e.name} (ID:{e.id})", e.id) for e in all_exps]
-    active_choices = [(f"{e.name} (ID:{e.id})", e.id) for e in active]
+    choices        = [(f"[{e.status}] {e.name}", e.id) for e in all_exps]
+    active_choices = [(f"{e.name}", e.id) for e in active]
 
     return active_html, gr.update(choices=choices), gr.update(choices=active_choices)
 
@@ -515,16 +629,74 @@ def view_result_handler(exp_choice):
         return "<p style='color:#ef4444'>未找到该实验</p>", None, ""
 
     conclusion_md = result.conclusion
-    chart = _experiment_result_chart(result) if result.is_significant else None
-    timeline = _timeline_html(result)
+    chart         = _experiment_result_chart(result) if result.is_significant else None
+    timeline      = _timeline_html(result)
     return conclusion_md, chart, timeline
 
 
 # ── Tab 2: my profile handler ──────────────────────────────────────────────
 
+def _calibration_html() -> str:
+    """Render the system learning progress card for Tab 2."""
+    try:
+        stats  = get_calibration_stats()
+        factor = get_sensitivity_factor()
+    except Exception:
+        return ""
+
+    total = stats["total"]
+    base = f"""
+<div style="font-family:sans-serif;padding:14px 16px;border-radius:10px;
+            background:#f8fafc;border:1px solid #e2e8f0;margin-top:12px;">
+  <div style="font-size:0.9rem;font-weight:600;color:#374151;margin-bottom:8px;">
+    🧠 系统学习进度
+  </div>"""
+
+    if total == 0:
+        return base + """
+  <div style="font-size:0.82rem;color:#64748b;">
+    还没有收到预警反馈。每次分析后，你可以回来告诉系统「那次预警准不准」，
+    帮助系统更了解你的身体规律。
+  </div>
+</div>"""
+
+    accuracy_str = f"{stats['accuracy']*100:.0f}%" if stats['accuracy'] is not None else "—"
+    remaining    = max(0, MIN_FEEDBACK - total)
+
+    if factor > 1.05:
+        factor_desc = f"已调高灵敏度（{factor:.2f}×）— 历史上有过漏报，系统已相应提高警觉"
+        factor_color = "#ef4444"
+    elif factor < 0.95:
+        factor_desc = f"已降低灵敏度（{factor:.2f}×）— 历史上偶有过度预警，系统已自动降温"
+        factor_color = "#22c55e"
+    else:
+        factor_desc = "评分正常（无调整）"
+        factor_color = "#64748b"
+
+    calibration_note = (
+        "（还需更多反馈后生效）" if total < MIN_FEEDBACK else ""
+    )
+
+    return base + f"""
+  <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:0.85rem;">
+    <div>
+      <span style="color:#64748b;">已收集反馈：</span>
+      <b>{total} 条</b>{calibration_note}
+    </div>
+    <div>
+      <span style="color:#64748b;">预测相符率：</span>
+      <b>{accuracy_str}</b>
+    </div>
+    <div>
+      <span style="color:{factor_color};font-weight:600;">{factor_desc}</span>
+    </div>
+  </div>
+</div>"""
+
+
 def load_profile():
-    diaries  = get_recent_diaries(n=30)
-    glucose  = get_glucose_trend(days=30)
+    diaries     = get_recent_diaries(n=30)
+    glucose     = get_glucose_trend(days=30)
     entry_count = get_diary_count()
 
     risk_chart = _history_chart(diaries)
@@ -532,8 +704,8 @@ def load_profile():
 
     # Summary stats
     if diaries:
-        avg_risk = sum(d.risk_score for d in diaries) / len(diaries)
-        high_cnt = sum(1 for d in diaries if d.risk_level == "high")
+        avg_risk   = sum(d.risk_score for d in diaries) / len(diaries)
+        high_cnt   = sum(1 for d in diaries if d.risk_level == "high")
         last_level = diaries[0].risk_level
         level_icons = {"low": "✅", "medium": "⚠️", "high": "🚨"}
         stats_html = f"""
@@ -546,7 +718,7 @@ def load_profile():
   <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;
               padding:14px 20px;min-width:130px;text-align:center;">
     <div style="font-size:1.8rem;font-weight:800;">{avg_risk:.0f}</div>
-    <div style="font-size:0.8rem;color:#64748b;">平均风险评分</div>
+    <div style="font-size:0.8rem;color:#64748b;">近期平均风险值</div>
   </div>
   <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;
               padding:14px 20px;min-width:130px;text-align:center;">
@@ -556,9 +728,9 @@ def load_profile():
   <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;
               padding:14px 20px;min-width:130px;text-align:center;">
     <div style="font-size:1.8rem;">{level_icons.get(last_level,"")}</div>
-    <div style="font-size:0.8rem;color:#64748b;">最近一次风险等级</div>
+    <div style="font-size:0.8rem;color:#64748b;">最近一次评估结果</div>
   </div>
-</div>"""
+</div>""" + _calibration_html()
     else:
         stats_html = "<p style='color:#9ca3af'>还没有任何记录，请先在「今日检测」标签页提交一条日记。</p>"
 
@@ -583,17 +755,31 @@ CSS = """
 #app-sub   { text-align:center; color:#64748b; margin-top:4px; margin-bottom:16px; }
 """
 
-with gr.Blocks(css=CSS, title="SeekDB 慢病早期预警") as demo:
+with gr.Blocks(css=CSS, title="慢病早期预警") as demo:
 
     gr.HTML("<h1 id='app-title'>🩺 慢病早期预警 Agent</h1>")
     gr.HTML(
-        "<p id='app-sub'>基于 SeekDB 混合搜索（向量 + 全文 + SQL）的个性化健康风险评估</p>"
+        "<p id='app-sub'>基于 SeekDB 的个性化健康风险评估</p>"
     )
 
     with gr.Tabs():
 
         # ── Tab 1: Today's check-in ────────────────────────────────────────
         with gr.Tab("📝 今日检测"):
+
+            # Feedback section (hidden until pending feedbacks exist)
+            feedback_info_html  = gr.HTML(visible=False)
+            feedback_diary_id   = gr.State(value=None)
+            with gr.Row(visible=False) as feedback_radio_row:
+                feedback_outcome = gr.Radio(
+                    choices=["确实变差了", "没明显变化", "反而好转了"],
+                    label="", show_label=False,
+                    value=None,
+                )
+            with gr.Row(visible=False) as feedback_btn_row:
+                feedback_submit_btn = gr.Button("提交反馈", size="sm", variant="secondary")
+            feedback_msg = gr.HTML()
+
             with gr.Row():
 
                 # Left: input
@@ -625,35 +811,30 @@ with gr.Blocks(css=CSS, title="SeekDB 慢病早期预警") as demo:
 
                     gr.Markdown("""
 ---
-**SeekDB 混合搜索工作原理**
+**系统是怎么工作的？**
 
-每次分析在 SeekDB 里发出一条 SQL：
+1️⃣ **关键词匹配** — 识别你描述中的症状词
 
-```sql
-SELECT DBMS_HYBRID_SEARCH.SEARCH(
-  'patient_diaries', @parm   -- 同时包含 knn + bool query
-)
-```
+2️⃣ **含义理解** — 理解你整体描述的含义
 
-三路信号一次返回：
-- **BM25**（IK 中文分词）精确匹配症状关键词
-- **HNSW cosine**（384 维）语义相似度
-- **SQL 过滤** `is_pre_danger`、`days_to_danger`
+3️⃣ **综合对比** — 与数万条历史健康记录比较
+
+系统在一次查询中同时完成以上三个步骤，再结合你自己的历史趋势和平日状态，给出个性化评估。
 """)
 
                 # Right: output
                 with gr.Column(scale=2):
                     score_html  = gr.HTML("<p style='color:#9ca3af'>等待分析…</p>")
-                    comp_chart  = gr.Plot(label="检索方式对比")
+                    comp_chart  = gr.Plot(label="三种方式对比")
                     ai_analysis = gr.Markdown()
-                    gr.Markdown("#### 🔎 最相似历史案例（混合搜索 Top 10）")
+                    gr.Markdown("#### 🔎 最相似历史案例（Top 10）")
                     hits_tbl = gr.Dataframe(
-                        headers=["状态", "血糖", "日记摘要", "关键词分", "语义分", "距危险"],
-                        datatype=["str","str","str","str","str","str"],
+                        headers=["状态", "血糖", "日记摘要", "距异常"],
+                        datatype=["str","str","str","str"],
                         row_count=10, wrap=True,
                     )
 
-                    # Experiment checkin panel (appears after submission)
+                    # Experiment check-in panel (appears after submission)
                     exp_checkin_html = gr.HTML(visible=True)
 
             # hidden state to pass ds between callbacks
@@ -666,13 +847,21 @@ SELECT DBMS_HYBRID_SEARCH.SEARCH(
                          ai_analysis, _ds_state, exp_checkin_html],
             )
 
+            # Feedback wiring
+            feedback_submit_btn.click(
+                fn=submit_feedback_handler,
+                inputs=[feedback_diary_id, feedback_outcome],
+                outputs=[feedback_msg, feedback_info_html, feedback_diary_id,
+                         feedback_radio_row, feedback_btn_row],
+            )
+
         # ── Tab 2: My profile ──────────────────────────────────────────────
         with gr.Tab("📊 我的档案"):
-            refresh_btn  = gr.Button("🔄 刷新", size="sm")
-            stats_html   = gr.HTML()
+            refresh_btn    = gr.Button("🔄 刷新", size="sm")
+            stats_html_out = gr.HTML()
             with gr.Row():
-                risk_chart_out = gr.Plot(label="风险趋势")
-                gluc_chart_out = gr.Plot(label="血糖趋势")
+                risk_chart_out = gr.Plot(label="风险评分趋势")
+                gluc_chart_out = gr.Plot(label="血糖记录")
             gr.Markdown("#### 历史记录（最近 30 条）")
             history_tbl = gr.Dataframe(
                 headers=["日期", "风险评分", "血糖", "日记摘要"],
@@ -682,11 +871,11 @@ SELECT DBMS_HYBRID_SEARCH.SEARCH(
 
             refresh_btn.click(
                 fn=load_profile,
-                outputs=[stats_html, risk_chart_out, gluc_chart_out, history_tbl],
+                outputs=[stats_html_out, risk_chart_out, gluc_chart_out, history_tbl],
             )
             demo.load(
                 fn=load_profile,
-                outputs=[stats_html, risk_chart_out, gluc_chart_out, history_tbl],
+                outputs=[stats_html_out, risk_chart_out, gluc_chart_out, history_tbl],
             )
 
         # ── Tab 3: Health Experiments ──────────────────────────────────────
@@ -700,19 +889,19 @@ SELECT DBMS_HYBRID_SEARCH.SEARCH(
                         label="实验名称", placeholder="例：晚饭后散步30分钟的影响"
                     )
                     exp_var_in = gr.Textbox(
-                        label="测试变量（每日需确认执行与否）",
+                        label="观察内容（每天需确认是否执行）",
                         placeholder="例：晚饭后步行30分钟"
                     )
                     exp_hyp_in = gr.Textbox(
-                        label="假设（可选）",
-                        placeholder="例：散步可能帮助降低次日血糖"
+                        label="你的预期（可选）",
+                        placeholder="例：散步可能帮助控制次日血糖"
                     )
                     exp_days_in = gr.Slider(
                         minimum=5, maximum=14, value=7, step=1,
                         label="观察天数"
                     )
-                    create_btn  = gr.Button("🚀 创建实验", variant="primary")
-                    create_msg  = gr.HTML()
+                    create_btn = gr.Button("🚀 创建实验", variant="primary")
+                    create_msg = gr.HTML()
 
                     gr.Markdown("---\n### 今日打卡")
                     log_exp_dd = gr.Dropdown(
@@ -720,7 +909,7 @@ SELECT DBMS_HYBRID_SEARCH.SEARCH(
                     )
                     log_exec_radio = gr.Radio(
                         choices=["执行了 ✓", "跳过了 ✗"],
-                        label="今天是否执行了实验变量？",
+                        label="今天是否执行了观察内容？",
                         value=None,
                     )
                     log_btn = gr.Button("📌 记录今日")
@@ -738,32 +927,18 @@ SELECT DBMS_HYBRID_SEARCH.SEARCH(
                     )
                     view_result_btn = gr.Button("📊 查看结果")
                     result_conclusion = gr.Markdown()
-                    result_chart = gr.Plot()
-                    result_timeline = gr.HTML()
+                    result_chart      = gr.Plot()
+                    result_timeline   = gr.HTML()
 
                     gr.Markdown("""
 ---
-**原理说明**
+**实验是怎么分析的？**
 
-实验结束后，SeekDB 做两层对比：
+实验结束后，系统会做两层对比：
 
-```sql
--- SQL 层：均值对比
-SELECT el.executed,
-       AVG(ud.risk_score)    AS avg_risk,
-       AVG(ud.glucose_level) AS avg_glucose
-FROM experiment_logs el
-JOIN user_diaries ud ON el.diary_id = ud.id
-GROUP BY el.executed;
-```
+**① 客观指标对比** — 计算执行日与未执行日的平均风险值和血糖，看数字上是否有规律
 
-```python
-# 向量层：主观感受差异
-exec_centroid = mean(embeddings for executed days)
-skip_centroid = mean(embeddings for skipped days)
-semantic_distance = cosine_distance(exec_centroid, skip_centroid)
-# 距离越大 = 两种状态下感受差异越大
-```
+**② 感受描述对比** — 分析两种状态下你的日记描述是否有明显不同，捕捉主观感受的差异
 
 ⚠️ 所有结果均为**相关性**数据，不代表因果关系。
 """)
@@ -794,6 +969,13 @@ semantic_distance = cosine_distance(exec_centroid, skip_centroid)
                 fn=lambda: _refresh_exp_ui(),
                 outputs=_exp_refresh_outputs,
             )
+
+    # Load pending feedbacks on page start
+    demo.load(
+        fn=load_feedback_section,
+        outputs=[feedback_info_html, feedback_diary_id,
+                 feedback_radio_row, feedback_btn_row],
+    )
 
     gr.HTML("""
 <div style="text-align:center;font-size:0.75rem;color:#9ca3af;padding:16px 0;">

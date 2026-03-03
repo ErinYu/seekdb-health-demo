@@ -77,8 +77,13 @@ def fuse(
     trend: Optional[TrendAnalysis],
     baseline_score_raw: Optional[float],
     entry_count: int,
+    calibration_factor: float = 1.0,
 ) -> DetailedScore:
-    """Combine the three signals into a DetailedScore."""
+    """Combine the three signals into a DetailedScore.
+
+    calibration_factor is the personal sensitivity adjustment derived from
+    historical feedback (see feedback.py).  1.0 = no adjustment.
+    """
 
     traj = assessment.risk_score          # already 0–100
     trend_val = trend.trend_score if trend else 0.0
@@ -92,7 +97,8 @@ def fuse(
         final = 0.70 * traj + 0.30 * trend_val
         mode  = "population"
 
-    final = round(min(100.0, max(0.0, final)), 1)
+    # Apply personal calibration (feedback loop)
+    final = round(min(100.0, max(0.0, final * calibration_factor)), 1)
 
     # ── Explanations ────────────────────────────────────────────────────────
     n_pre   = assessment.pre_danger_hits
@@ -108,7 +114,7 @@ def fuse(
             f"历史相似记录中有部分来自预警期（{n_pre}/{n_total} 条），需要关注。"
         )
     else:
-        traj_exp = f"历史相似记录大多来自稳定期，轨迹信号正常。"
+        traj_exp = "与你今日描述相似的历史记录大多来自平稳期，说明今天状态正常。"
 
     if trend:
         trend_exp = trend.summary
@@ -116,16 +122,13 @@ def fuse(
         trend_exp = "历史记录不足，暂无个人趋势分析（需至少 3 条）。"
 
     if base_val < 0:
-        base_exp = f"还需 {MIN_ENTRIES - entry_count} 条记录后开启个人基线对比。"
+        base_exp = f"再记录 {MIN_ENTRIES - entry_count} 次后，系统将开始与你自身平日状态对比。"
     elif base_val >= 60:
-        base_exp = (
-            f"今日状态与你的个人健康基线偏差较大（偏差度 {base_val:.0f}/100），"
-            "这是一个值得关注的信号。"
-        )
+        base_exp = "今天的状态与你平时明显不同，这个差异值得留意。"
     elif base_val >= 30:
-        base_exp = f"与个人基线有轻微偏差（偏差度 {base_val:.0f}/100），在可观察范围内。"
+        base_exp = "今天的状态与平时有一些不同，属于可观察的范围。"
     else:
-        base_exp = f"今日状态与个人健康基线接近（偏差度 {base_val:.0f}/100），表现正常。"
+        base_exp = "今天的状态与你平时非常接近，整体表现正常。"
 
     return DetailedScore(
         trajectory_score=round(traj, 1),

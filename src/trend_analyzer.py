@@ -127,13 +127,13 @@ def analyze_trend(diaries: list[UserDiary], window: int = 7) -> Optional[TrendAn
         if glucose_slope > 3:
             summary = (
                 f"血糖近 {len(glucose_vals)} 次记录平均每天上升 "
-                f"{glucose_slope:.1f} mg/dL，趋势持续恶化。"
+                f"{glucose_slope:.1f} mg/dL，近期呈上升趋势，值得留意。"
             )
         else:
-            summary = f"近期症状描述正在向高风险方向偏移（趋势评分 {trend_score:.0f}/100）。"
+            summary = "近期的描述中有一些值得关注的变化，建议多注意自身感受。"
     elif trend_score >= 25:
         direction = "stable"
-        summary = f"近期健康状态基本稳定，有轻微波动（趋势评分 {trend_score:.0f}/100）。"
+        summary = "近期健康状态基本稳定，有轻微波动，总体在正常范围内。"
     else:
         direction = "improving"
         if glucose_slope < -2:
