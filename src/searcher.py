@@ -167,9 +167,10 @@ def _vector_only_search(query_text: str, k: int = 15) -> list[dict]:
 
 
 def _keyword_only_search(query_text: str, k: int = 15) -> list[dict]:
-    """Pure full-text (BM25) search."""
+    """Pure full-text (BM25) search via combined FULLTEXT index."""
     conn = get_connection()
     cursor = conn.cursor()
+    # idx_combined_fts covers (diary_text, symptoms_keywords) in one index
     sql = f"""
         SELECT patient_id, diary_text, glucose_level, is_pre_danger, days_to_danger,
                MATCH(diary_text, symptoms_keywords) AGAINST (%s IN NATURAL LANGUAGE MODE) AS score

@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+
+# Model cache (sentence-transformers downloads here)
+~/.cache/
+.cache/
+
+# SeekDB embedded data
+seekdb.db/
+*.db/
+
+# Gradio temp files
+gradio_cached_examples/
+flagged/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp

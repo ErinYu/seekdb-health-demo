@@ -37,8 +37,7 @@ CREATE TABLE IF NOT EXISTS patient_diaries (
     is_pre_danger       TINYINT(1)  DEFAULT 0,
     days_to_danger      INT         DEFAULT -1,
     diary_embedding     VECTOR(384),
-    FULLTEXT INDEX idx_diary_fts(diary_text)         WITH PARSER ik,
-    FULLTEXT INDEX idx_kw_fts(symptoms_keywords)     WITH PARSER ik,
+    FULLTEXT INDEX idx_combined_fts(diary_text, symptoms_keywords) WITH PARSER ik,
     VECTOR   INDEX idx_diary_vec(diary_embedding)
         WITH (distance=cosine, type=hnsw, lib=vsag)
 )

@@ -5,13 +5,26 @@ Gradio UI — run with: python app.py
 
 import os
 import sys
-import json
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-import numpy as np
+import matplotlib.font_manager as fm
 import gradio as gr
+
+# Use a CJK-capable font when available, fall back to system default
+def _setup_cjk_font():
+    """Try to find a font that can render CJK characters."""
+    candidates = ["Noto Sans CJK SC", "WenQuanYi Micro Hei", "SimHei",
+                  "Microsoft YaHei", "PingFang SC", "Arial Unicode MS"]
+    available = {f.name for f in fm.fontManager.ttflist}
+    for name in candidates:
+        if name in available:
+            plt.rcParams["font.family"] = name
+            return
+    # Fall back: use ASCII-only labels in the chart to avoid tofu squares
+    plt.rcParams["font.family"] = "sans-serif"
+
+_setup_cjk_font()
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -74,7 +87,8 @@ def _risk_badge(level: str, score: float) -> str:
 # ── Comparison bar chart ───────────────────────────────────────────────────
 
 def _comparison_chart(assessment: RiskAssessment):
-    methods = ["仅关键词\n(BM25)", "仅语义\n(向量)", "混合搜索\n(SeekDB)"]
+    # Use ASCII labels to avoid font issues on systems without CJK fonts
+    methods = ["Keyword only\n(BM25)", "Vector only\n(HNSW)", "Hybrid\n(SeekDB)"]
     ratios  = [
         assessment.keyword_only_pre_danger_ratio * 100,
         assessment.vector_only_pre_danger_ratio  * 100,
@@ -82,12 +96,15 @@ def _comparison_chart(assessment: RiskAssessment):
     ]
     colors = ["#93c5fd", "#86efac", "#f97316"]
 
-    fig, ax = plt.subplots(figsize=(5.5, 3.2))
+    fig, ax = plt.subplots(figsize=(5.5, 3.4))
     bars = ax.bar(methods, ratios, color=colors, width=0.5, zorder=3)
 
-    ax.set_ylim(0, 105)
-    ax.set_ylabel("命中「预警期」记录比例 (%)", fontsize=9)
-    ax.set_title("三种检索方式对比\n——预警记录命中率越高 = 风险识别越准确", fontsize=9)
+    ax.set_ylim(0, 115)
+    ax.set_ylabel("Pre-danger records hit (%)", fontsize=9)
+    ax.set_title(
+        "Search method comparison\n(higher = more pre-warning records retrieved)",
+        fontsize=9,
+    )
     ax.yaxis.grid(True, linestyle="--", alpha=0.5, zorder=0)
     ax.set_axisbelow(True)
     ax.spines[["top", "right"]].set_visible(False)
@@ -97,9 +114,14 @@ def _comparison_chart(assessment: RiskAssessment):
             bar.get_x() + bar.get_width() / 2,
             bar.get_height() + 1.5,
             f"{val:.0f}%",
-            ha="center", va="bottom", fontsize=10, fontweight="bold",
+            ha="center", va="bottom", fontsize=11, fontweight="bold",
         )
 
+    fig.text(
+        0.5, -0.02,
+        "Hybrid search finds more pre-danger matches than either method alone",
+        ha="center", fontsize=8, style="italic", color="#64748b",
+    )
     plt.tight_layout()
     return fig
 
@@ -135,7 +157,19 @@ def run_analysis(diary_text: str):
             "",
         )
 
-    assessment = assess_risk(diary_text, k=15)
+    try:
+        assessment = assess_risk(diary_text, k=15)
+    except Exception as e:
+        err_html = (
+            "<div style='padding:12px;background:#fef2f2;border-radius:8px;"
+            "border:1px solid #fca5a5;color:#b91c1c'>"
+            f"<b>数据库连接失败</b>：{e}<br><br>"
+            "请确认 SeekDB 已启动：<code>docker-compose up -d</code><br>"
+            "并已完成数据初始化：<code>python scripts/init_db.py</code>"
+            "</div>"
+        )
+        return err_html, None, [], ""
+
     analysis   = generate_analysis(diary_text, assessment)
     badge_html = _risk_badge(assessment.risk_level, assessment.risk_score)
     chart      = _comparison_chart(assessment)
