@@ -127,6 +127,34 @@ CREATE TABLE IF NOT EXISTS user_profile (
 )
 """
 
+# ── Emotion data columns (Phase 3A) ────────────────────────────────────────
+ALTER_USER_DIARIES_EMOTION = """
+ALTER TABLE user_diaries
+ADD COLUMN IF NOT EXISTS emotion_score FLOAT,
+ADD COLUMN IF NOT EXISTS anxiety_score FLOAT
+"""
+
+ALTER_USER_PROFILE_EMOTION = """
+ALTER TABLE user_profile
+ADD COLUMN IF NOT EXISTS emotion_risk_coupling FLOAT DEFAULT 0.0,
+ADD COLUMN IF NOT EXISTS emotion_volatility FLOAT DEFAULT 0.0,
+ADD COLUMN IF NOT EXISTS emotion_amplification FLOAT DEFAULT 1.0,
+ADD COLUMN IF NOT EXISTS emotion_active TINYINT(1) DEFAULT 0
+"""
+
+CREATE_EMOTION_COUPLING = """
+CREATE TABLE IF NOT EXISTS emotion_coupling (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    correlation FLOAT,
+    lag1_correlation FLOAT,
+    mean_emotion_low_risk FLOAT,
+    mean_emotion_high_risk FLOAT,
+    interpretation TEXT,
+    data_points INT,
+    computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
 # Back-compat alias used by the original ingest.py
 CREATE_TABLE = CREATE_POPULATION_TABLE
 DROP_TABLE   = "DROP TABLE IF EXISTS patient_diaries"

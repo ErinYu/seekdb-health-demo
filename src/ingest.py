@@ -9,7 +9,9 @@ from .embedder import get_embedder, vec_sql
 from .schema import (
     CREATE_DATABASE, CREATE_TABLE, CREATE_USER_DIARIES, CREATE_USER_BASELINE,
     CREATE_EXPERIMENTS, CREATE_EXPERIMENT_LOGS, CREATE_RISK_FEEDBACKS,
-    CREATE_USER_PROFILE, DROP_TABLE, DATABASE,
+    CREATE_USER_PROFILE, CREATE_EMOTION_COUPLING,
+    ALTER_USER_DIARIES_EMOTION, ALTER_USER_PROFILE_EMOTION,
+    DROP_TABLE, DATABASE,
 )
 from .data_generator import DiaryRecord
 
@@ -28,7 +30,8 @@ def setup_schema(drop_existing: bool = False) -> None:
     conn = get_connection()
     cursor = conn.cursor()
     if drop_existing:
-        for tbl in ("user_profile", "risk_feedbacks", "experiment_logs", "experiments",
+        for tbl in ("emotion_coupling", "user_profile", "risk_feedbacks",
+                    "experiment_logs", "experiments",
                     "user_baseline", "user_diaries", "patient_diaries"):
             cursor.execute(f"DROP TABLE IF EXISTS {tbl}")
         print("🗑  Dropped existing tables.")
@@ -39,10 +42,14 @@ def setup_schema(drop_existing: bool = False) -> None:
     cursor.execute(CREATE_EXPERIMENT_LOGS)
     cursor.execute(CREATE_RISK_FEEDBACKS)
     cursor.execute(CREATE_USER_PROFILE)
+    cursor.execute(CREATE_EMOTION_COUPLING)
+    # ALTER statements are idempotent (IF NOT EXISTS) — safe to run every time
+    cursor.execute(ALTER_USER_DIARIES_EMOTION)
+    cursor.execute(ALTER_USER_PROFILE_EMOTION)
     conn.commit()
     cursor.close()
     conn.close()
-    print("✅ Schema ready (7 tables).")
+    print("✅ Schema ready (8 tables + emotion columns).")
 
 
 def ingest_records(records: list[DiaryRecord]) -> None:

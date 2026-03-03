@@ -37,6 +37,8 @@ from src.feedback import (
     PendingFeedback, MIN_FEEDBACK,
 )
 from src.user_profile import get_profile, maybe_refresh_profile, ProfileParams
+from src.emotion import compute_emotion_score, analyze_coupling, CouplingResult, save_coupling, get_coupling
+from src.recommender import recommend, Intervention
 
 
 # ── Font setup ─────────────────────────────────────────────────────────────
@@ -124,6 +126,20 @@ def _score_breakdown(ds: DetailedScore) -> str:
     base_note    = "" if base_val >= 0 else "（积累更多记录后开启）"
     base_display = max(0, base_val)
 
+    # Phase 3A: Emotion bar (only shown when emotion is active)
+    emotion_bar = ""
+    if hasattr(ds, "emotion_score") and ds.emotion_score >= 0:
+        profile = getattr(ds, "_profile", None)
+        if profile and profile.emotion_active:
+            # Convert wellness score to risk signal for display (inverted)
+            emotion_risk_signal = (100 - ds.emotion_score)
+            emotion_bar = bar(
+                "💭 情绪状态影响",
+                emotion_risk_signal,
+                "#14b8a6",
+                ds.emotion_explanation[:80]+"…" if len(ds.emotion_explanation)>80 else ds.emotion_explanation
+            )
+
     html = f"""
 <div style="font-family:sans-serif;padding:14px 16px;border-radius:10px;
             background:#f8fafc;border:1px solid #e2e8f0;margin-top:8px;">
@@ -136,8 +152,116 @@ def _score_breakdown(ds: DetailedScore) -> str:
        ds.trend_explanation[:80]+"…" if len(ds.trend_explanation)>80 else ds.trend_explanation)}
   {bar("🧬 与平日的差异", base_display,         "#8b5cf6" if base_val>=0 else "#d1d5db",
        (ds.baseline_explanation[:80]+"…" if len(ds.baseline_explanation)>80 else ds.baseline_explanation) or base_note)}
+  {emotion_bar}
 </div>"""
     return html
+
+
+# ── Intervention card ──────────────────────────────────────────────────────
+
+def _intervention_card(rec: Intervention) -> str:
+    bg     = {3: "#fef2f2", 2: "#fffbeb", 1: "#f0fdf4"}.get(rec.urgency, "#f8fafc")
+    border = {3: "#fca5a5", 2: "#fde68a", 1: "#bbf7d0"}.get(rec.urgency, "#e2e8f0")
+    tc     = {3: "#b91c1c", 2: "#92400e", 1: "#166534"}.get(rec.urgency, "#374151")
+    return f"""
+<div style="font-family:sans-serif;padding:14px 16px;border-radius:10px;
+            background:{bg};border:1px solid {border};margin-top:8px;">
+  <div style="font-size:0.85rem;font-weight:600;color:{tc};margin-bottom:6px;">
+    {rec.icon} 今日建议 &nbsp;<span style="font-weight:400;font-size:0.75rem;
+    color:#64748b;background:#f1f5f9;padding:1px 7px;border-radius:99px;">{rec.category}</span>
+  </div>
+  <div style="font-size:0.98rem;font-weight:500;color:#111827;margin-bottom:6px;">
+    {rec.text}
+  </div>
+  <div style="font-size:0.78rem;color:#64748b;">{rec.reason}</div>
+</div>"""
+
+
+# ── Coupling HTML & chart ───────────────────────────────────────────────────
+
+def _coupling_html(coupling) -> str:
+    if coupling is None:
+        return """
+<div style="font-family:sans-serif;padding:14px 16px;border-radius:10px;
+            background:#f8fafc;border:1px solid #e2e8f0;margin-top:8px;">
+  <div style="font-size:0.9rem;font-weight:600;color:#374151;margin-bottom:4px;">
+    🔗 情绪-生理耦合分析
+  </div>
+  <div style="font-size:0.82rem;color:#64748b;">
+    积累 5 条以上记录后，系统将分析你的情绪状态与健康风险之间的关联规律。
+  </div>
+</div>"""
+
+    r  = coupling.correlation
+    bar_w     = int(abs(r) * 100)
+    bar_color = "#14b8a6" if r <= 0 else "#f97316"
+    r_color   = bar_color
+
+    return f"""
+<div style="font-family:sans-serif;padding:14px 16px;border-radius:10px;
+            background:#f8fafc;border:1px solid #e2e8f0;margin-top:8px;">
+  <div style="font-size:0.9rem;font-weight:600;color:#374151;margin-bottom:8px;">
+    🔗 情绪-生理耦合分析（基于 {coupling.data_points} 条记录）
+  </div>
+  <div style="font-size:0.85rem;color:#374151;margin-bottom:10px;">
+    {coupling.interpretation}
+  </div>
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+    <span style="font-size:0.78rem;color:#64748b;width:56px;flex-shrink:0;">相关度</span>
+    <div style="flex:1;background:#f1f5f9;border-radius:99px;height:8px;overflow:hidden;">
+      <div style="width:{bar_w}%;height:100%;background:{bar_color};border-radius:99px;"></div>
+    </div>
+    <span style="font-size:0.8rem;font-weight:700;color:{r_color};">r={r:+.2f}</span>
+  </div>
+  <div style="display:flex;gap:20px;font-size:0.8rem;color:#64748b;">
+    <span>低风险天情绪均值：<b>{coupling.mean_emotion_low_risk:.0f}</b></span>
+    <span>高风险天情绪均值：<b>{coupling.mean_emotion_high_risk:.0f}</b></span>
+  </div>
+</div>"""
+
+
+def _emotion_coupling_chart(diaries, coupling):
+    """Dual-axis line: emotion score (teal, dashed) + risk score (orange)."""
+    entries = [d for d in reversed(diaries) if d.risk_score is not None]
+    if len(entries) < 5:
+        return None
+
+    dates    = [d.diary_date for d in entries]
+    risks    = [d.risk_score for d in entries]
+    emotions = [compute_emotion_score(d.diary_text) for d in entries]
+
+    c_emo  = "#14b8a6"   # teal
+    c_risk = "#f97316"   # orange
+
+    fig, ax1 = plt.subplots(figsize=(7, 2.8))
+
+    ax1.set_ylabel("情绪/状态评分" if _HAS_CJK else "Emotion Score",
+                   fontsize=8, color=c_emo)
+    ax1.plot(dates, emotions, color=c_emo, linewidth=1.5, linestyle="--",
+             marker="o", markersize=3, label="情绪评分" if _HAS_CJK else "Emotion")
+    ax1.tick_params(axis="y", labelcolor=c_emo, labelsize=7)
+    ax1.set_ylim(0, 108)
+
+    ax2 = ax1.twinx()
+    ax2.set_ylabel("风险评分" if _HAS_CJK else "Risk Score",
+                   fontsize=8, color=c_risk)
+    ax2.plot(dates, risks, color=c_risk, linewidth=1.5,
+             marker="s", markersize=3, label="风险评分" if _HAS_CJK else "Risk")
+    ax2.tick_params(axis="y", labelcolor=c_risk, labelsize=7)
+    ax2.set_ylim(0, 108)
+
+    ax1.set_title("情绪-风险耦合走势" if _HAS_CJK else "Emotion-Risk Coupling",
+                  fontsize=9)
+    ax1.spines["top"].set_visible(False)
+    ax2.spines["top"].set_visible(False)
+    ax1.yaxis.grid(True, linestyle=":", alpha=0.3)
+    ax1.set_axisbelow(True)
+
+    if len(dates) > 6:
+        plt.xticks(rotation=30, fontsize=7)
+
+    plt.tight_layout()
+    return fig
 
 
 # ── Charts ─────────────────────────────────────────────────────────────────
@@ -232,8 +356,9 @@ def _glucose_chart(points):
 
 def _full_analysis(diary_text: str, glucose: float | None, bp: int | None) -> DetailedScore:
     """
-    Run the full 3-signal pipeline and fuse into a DetailedScore.
+    Run the full pipeline (3-signal + emotion) and fuse into a DetailedScore.
     Applies personal calibration factor (Sprint 3) and personal profile (Phase 3).
+    Phase 3A: Adds emotion as fourth signal when coupling is active.
     """
     emb = embed(diary_text)
 
@@ -270,13 +395,17 @@ def _full_analysis(diary_text: str, glucose: float | None, bp: int | None) -> De
     # 4. Global calibration from feedback history (Sprint 3)
     calibration_factor = get_sensitivity_factor()
 
-    # Fuse (with Phase 3 profile params)
+    # Phase 3A: Compute emotion score for current diary
+    emotion_score = compute_emotion_score(diary_text)
+
+    # Fuse (with Phase 3 profile params and emotion signal)
     ds = fuse(
         assessment, trend, base_score, entry_count,
         calibration_factor=calibration_factor,
         glucose_provided=(glucose is not None),
         prev_trend_score=prev_trend_score,
         profile=profile,
+        emotion_score=emotion_score,  # Phase 3A: emotion signal
     )
 
     # Carry comparison ratios and raw objects for later use
@@ -285,6 +414,10 @@ def _full_analysis(diary_text: str, glucose: float | None, bp: int | None) -> De
     ds._hyb_ratio  = assessment.hybrid_pre_danger_ratio
     ds._assessment = assessment
     ds._emb        = emb
+    ds._emotion_score = emotion_score  # Phase 3A: stash for coupling
+    # Stash for recommender and coupling chart
+    ds._trend      = trend
+    ds._profile    = profile
 
     return ds
 
@@ -304,7 +437,7 @@ EXAMPLES = [
 def run_check(diary_text: str, glucose_val: float | None, bp_val: int | None):
     if not diary_text.strip():
         return ("<p style='color:#9ca3af'>请输入今天的健康日记…</p>",
-                None, None, [], "", None)
+                None, None, [], "", None, "", "")
     try:
         ds = _full_analysis(diary_text, glucose_val, bp_val)
     except Exception as e:
@@ -312,7 +445,7 @@ def run_check(diary_text: str, glucose_val: float | None, bp_val: int | None):
                f"border:1px solid #fca5a5;color:#b91c1c'>"
                f"<b>连接出错</b>：{e}<br>请确认 SeekDB 已启动：<code>docker-compose up -d</code>"
                f"</div>")
-        return err, None, None, [], "", None
+        return err, None, None, [], "", None, "", ""
 
     # Save to DB
     save_diary(
@@ -326,6 +459,15 @@ def run_check(diary_text: str, glucose_val: float | None, bp_val: int | None):
         baseline_score=max(0, ds.baseline_score),
         embedding=ds._emb,
     )
+
+    # Phase 3A: Refresh and cache coupling analysis after each save
+    try:
+        all_diaries = get_recent_diaries(n=200)
+        coupling = analyze_coupling(all_diaries)
+        if coupling:
+            save_coupling(coupling)
+    except Exception:
+        pass  # Never block the main flow for coupling computation
 
     # AI analysis
     analysis = generate_analysis(diary_text, ds._assessment)
@@ -351,11 +493,23 @@ def run_check(diary_text: str, glucose_val: float | None, bp_val: int | None):
             days_info,
         ])
 
-    # Active experiments check-in panel
+    # Micro-intervention recommendation (Phase 2)
     active        = get_active_experiments()
+    active_vars   = [e.variable for e in active]
+    rec           = recommend(
+        diary_text,
+        ds.risk_level,
+        glucose_val,
+        getattr(ds, "_trend", None),
+        getattr(ds, "_profile", ProfileParams()),
+        active_vars,
+    )
+    rec_html = _intervention_card(rec)
+
+    # Active experiments check-in panel
     exp_panel_html = _experiment_checkin_panel(active)
 
-    return combined_html, chart, analysis, hits_table, analysis, ds, exp_panel_html
+    return combined_html, chart, analysis, hits_table, analysis, ds, exp_panel_html, rec_html
 
 
 # ── Feedback UI helpers ─────────────────────────────────────────────────────
@@ -738,7 +892,8 @@ def _profile_params_html() -> str:
         )
 
     active_count = sum([
-        p.glucose_active, p.lag_active, p.triggers_active, p.noise_active
+        p.glucose_active, p.lag_active, p.triggers_active, p.noise_active,
+        p.emotion_active,
     ])
 
     # Build parameter value strings
@@ -753,6 +908,9 @@ def _profile_params_html() -> str:
     lag_val      = f"约 {p.lag_window} 天"      if p.lag_active     else ""
     trigger_val  = "、".join(p.trigger_symptoms) if p.triggers_active else ""
     noise_val    = f"±{p.noise_tolerance:.0f} 分" if p.noise_active    else ""
+    emotion_val  = (f"相关度 r={p.emotion_risk_coupling:+.2f}，"
+                    f"放大系数 {p.emotion_amplification:.2f}×"
+                    if p.emotion_active else "")
 
     rows = (
         _param_row("🩸", "血糖敏感度",  g_val,      p.glucose_active,
@@ -763,6 +921,8 @@ def _profile_params_html() -> str:
                      f"需 {5} 次确认「变差」")
         + _param_row("📊", "正常波动带", noise_val,   p.noise_active,
                      f"需 {10} 条记录")
+        + _param_row("💭", "情绪-风险耦合", emotion_val, p.emotion_active,
+                     "需 5 条记录积累耦合数据")
     )
 
     computed_tip = (
@@ -775,7 +935,7 @@ def _profile_params_html() -> str:
 <div style="font-family:sans-serif;padding:14px 16px;border-radius:10px;
             background:#f8fafc;border:1px solid #e2e8f0;margin-top:8px;">
   <div style="font-size:0.9rem;font-weight:600;color:#374151;margin-bottom:8px;">
-    🎯 个人参数（已激活 {active_count}/4 个）
+    🎯 个人参数（已激活 {active_count}/5 个）
   </div>
   {rows}
   {computed_tip}
@@ -789,6 +949,14 @@ def load_profile():
 
     risk_chart = _history_chart(diaries)
     gluc_chart = _glucose_chart(glucose) if glucose else None
+
+    # Phase 3A: Emotion coupling display
+    coupling = get_coupling()
+    if coupling is None:
+        # Fallback to live computation if cache miss
+        coupling = analyze_coupling(diaries)
+    coupling_html = _coupling_html(coupling)
+    coupling_chart = _emotion_coupling_chart(diaries, coupling)
 
     # Summary stats
     if diaries:
@@ -833,7 +1001,7 @@ def load_profile():
             d.diary_text[:60] + "…",
         ])
 
-    return stats_html, risk_chart, gluc_chart, table_rows
+    return stats_html, risk_chart, gluc_chart, table_rows, coupling_html, coupling_chart
 
 
 # ── Gradio layout ──────────────────────────────────────────────────────────
@@ -913,6 +1081,7 @@ with gr.Blocks(css=CSS, title="慢病早期预警") as demo:
                 # Right: output
                 with gr.Column(scale=2):
                     score_html  = gr.HTML("<p style='color:#9ca3af'>等待分析…</p>")
+                    intervention_html = gr.HTML()   # Phase 2: micro-intervention card
                     comp_chart  = gr.Plot(label="三种方式对比")
                     ai_analysis = gr.Markdown()
                     gr.Markdown("#### 🔎 最相似历史案例（Top 10）")
@@ -932,7 +1101,7 @@ with gr.Blocks(css=CSS, title="慢病早期预警") as demo:
                 fn=run_check,
                 inputs=[diary_in, glucose_in, bp_in],
                 outputs=[score_html, comp_chart, ai_analysis, hits_tbl,
-                         ai_analysis, _ds_state, exp_checkin_html],
+                         ai_analysis, _ds_state, exp_checkin_html, intervention_html],
             )
 
             # Feedback wiring
@@ -950,6 +1119,9 @@ with gr.Blocks(css=CSS, title="慢病早期预警") as demo:
             with gr.Row():
                 risk_chart_out = gr.Plot(label="风险评分趋势")
                 gluc_chart_out = gr.Plot(label="血糖记录")
+            # Phase 3A: Emotion coupling display
+            coupling_html_out = gr.HTML()
+            coupling_chart_out = gr.Plot(label="情绪-生理耦合趋势")
             gr.Markdown("#### 历史记录（最近 30 条）")
             history_tbl = gr.Dataframe(
                 headers=["日期", "风险评分", "血糖", "日记摘要"],
@@ -959,11 +1131,13 @@ with gr.Blocks(css=CSS, title="慢病早期预警") as demo:
 
             refresh_btn.click(
                 fn=load_profile,
-                outputs=[stats_html_out, risk_chart_out, gluc_chart_out, history_tbl],
+                outputs=[stats_html_out, risk_chart_out, gluc_chart_out, history_tbl,
+                         coupling_html_out, coupling_chart_out],
             )
             demo.load(
                 fn=load_profile,
-                outputs=[stats_html_out, risk_chart_out, gluc_chart_out, history_tbl],
+                outputs=[stats_html_out, risk_chart_out, gluc_chart_out, history_tbl,
+                         coupling_html_out, coupling_chart_out],
             )
 
         # ── Tab 3: Health Experiments ──────────────────────────────────────

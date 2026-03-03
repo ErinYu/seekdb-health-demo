@@ -57,6 +57,7 @@ class DetailedScore:
     trajectory_score: float          # population library signal
     trend_score: float               # personal trend signal
     baseline_score: float            # personal baseline signal  (-1 if unavailable)
+    emotion_score: float             # Phase 3A: emotion signal  (-1 if unavailable)
 
     # ── Final ───────────────────────────────────────────────────────────────
     final_score: float               # 0–100
@@ -71,6 +72,7 @@ class DetailedScore:
     trajectory_explanation: str = ""
     trend_explanation: str = ""
     baseline_explanation: str = ""
+    emotion_explanation: str = ""     # Phase 3A: emotion insight
 
 
 def fuse(
@@ -82,13 +84,15 @@ def fuse(
     glucose_provided: bool = False,
     prev_trend_score: float = 0.0,
     profile: Optional[ProfileParams] = None,
+    emotion_score: Optional[float] = None,  # Phase 3A: emotion signal
 ) -> DetailedScore:
-    """Combine the three signals into a DetailedScore.
+    """Combine the signals into a DetailedScore.
 
     calibration_factor  — global feedback-loop multiplier (Sprint 3).
     glucose_provided    — whether the user entered a glucose value today.
     prev_trend_score    — last diary's trend score, for noise-tolerance damping.
     profile             — Phase 3 personalisation params (defaults = no-op).
+    emotion_score       — Phase 3A: emotion/wellness score (0-100, higher = better).
     """
     if profile is None:
         profile = ProfileParams()
@@ -110,13 +114,50 @@ def fuse(
         trend_weight_personal   *= 0.6
         trend_weight_population *= 0.6
 
+    # ── Phase 3A: Emotion coupling ───────────────────────────────────────────
+    # Convert emotion score to risk signal: 0-100 emotion → 0-1 risk (inverted)
+    # Low emotion (poor wellness) = higher risk signal
+    emotion_signal = 0.0
+    emotion_val = -1  # Default: unavailable
+
+    if emotion_score is not None and profile.emotion_active:
+        # Normalize emotion to signal: 0-100 → 0-1 (inverted: low emotion = high risk)
+        emotion_signal = (100 - emotion_score) / 100
+
+        # Apply personal amplification factor based on coupling strength
+        if profile.emotion_amplification != 1.0:
+            emotion_signal *= profile.emotion_amplification
+
+        emotion_val = emotion_score
+
     # ── Weight fusion ───────────────────────────────────────────────────────
+    # Four-signal mode when emotion is active and baseline is available:
+    #   0.35×trajectory + 0.25×trend + 0.25×baseline + 0.15×emotion
+    # Three-signal modes when emotion is inactive:
+    #   Personal: 0.45×trajectory + 0.30×trend + 0.25×baseline
+    #   Cold-start: 0.70×trajectory + 0.30×trend
+
     if entry_count >= MIN_ENTRIES and base_val >= 0:
-        final = 0.45 * traj + trend_weight_personal * trend_val + 0.25 * base_val
-        mode  = "personal"
+        # Personal model mode (baseline available)
+        if profile.emotion_active and emotion_val >= 0:
+            # Four-signal mode with emotion
+            final = (0.35 * traj + trend_weight_personal * trend_val +
+                     0.25 * base_val + 0.15 * (emotion_signal * 100))
+            mode = "personal_emotion"
+        else:
+            # Three-signal mode (original)
+            final = 0.45 * traj + trend_weight_personal * trend_val + 0.25 * base_val
+            mode = "personal"
     else:
-        final = 0.70 * traj + trend_weight_population * trend_val
-        mode  = "population"
+        # Cold-start mode (no baseline yet)
+        if profile.emotion_active and emotion_val >= 0:
+            # Add emotion signal even in cold-start
+            final = (0.60 * traj + trend_weight_population * trend_val +
+                     0.15 * (emotion_signal * 100))
+        else:
+            # Original cold-start
+            final = 0.70 * traj + trend_weight_population * trend_val
+        mode = "population"
 
     # Apply global calibration (feedback loop, Sprint 3)
     final = round(min(100.0, max(0.0, final * calibration_factor)), 1)
@@ -151,10 +192,26 @@ def fuse(
     else:
         base_exp = "今天的状态与你平时非常接近，整体表现正常。"
 
+    # ── Phase 3A: Emotion explanation ────────────────────────────────────────
+    emotion_exp = ""
+    if profile.emotion_active and emotion_val >= 0:
+        if emotion_val < 30:
+            emotion_exp = (
+                f"今天的情绪状态较为低落（{emotion_val:.0f}分），"
+                f"这与你的健康风险呈正相关，请留意心理调节。"
+            )
+        elif emotion_val > 70:
+            emotion_exp = (
+                f"今天情绪状态良好（{emotion_val:.0f}分），"
+                "保持积极心态有助于稳定生理指标。"
+            )
+        # Medium emotion (30-70) - no special explanation needed
+
     return DetailedScore(
         trajectory_score=round(traj, 1),
         trend_score=round(trend_val, 1),
         baseline_score=round(base_val, 1),
+        emotion_score=round(emotion_val, 1),
         final_score=final,
         risk_level=_level(final),
         entry_count=entry_count,
@@ -163,4 +220,5 @@ def fuse(
         trajectory_explanation=traj_exp,
         trend_explanation=trend_exp,
         baseline_explanation=base_exp,
+        emotion_explanation=emotion_exp,
     )

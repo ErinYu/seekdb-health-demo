@@ -65,6 +65,12 @@ class ProfileParams:
     triggers_active: bool          = False
     noise_active: bool             = False
 
+    # Phase 3A: Emotion coupling parameters
+    emotion_risk_coupling: float   = 0.0      # Pearson r from coupling analysis
+    emotion_volatility: float      = 0.0      # Rolling std dev of emotion scores
+    emotion_amplification: float   = 1.0      # Risk multiplier based on coupling
+    emotion_active: bool           = False    # Whether coupling is statistically significant
+
 
 # ── Text utilities (no external deps) ──────────────────────────────────────
 
@@ -238,6 +244,21 @@ def compute_profile(diaries, feedbacks) -> ProfileParams:
         if params.trigger_symptoms:
             params.triggers_active = True
 
+    # ── Phase 3A: Emotion coupling analysis ────────────────────────────────────
+    from .emotion import analyze_coupling, compute_volatility
+
+    # Compute emotion-risk coupling
+    coupling = analyze_coupling(diaries)
+    if coupling and abs(coupling.correlation) > 0.3:
+        params.emotion_risk_coupling = coupling.correlation
+        params.emotion_active = True
+        # Calculate amplification: stronger correlation = more amplification
+        # Range: 1.0 (no amplification) to 1.2 (max amplification)
+        params.emotion_amplification = 1.0 + (abs(coupling.correlation) - 0.3) * 0.3
+
+    # Compute emotion volatility
+    params.emotion_volatility = compute_volatility(diaries)
+
     params.data_version += 1
     params.computed_at = datetime.now().isoformat(timespec="seconds")
     return params
@@ -253,8 +274,10 @@ def _save_profile(params: ProfileParams) -> None:
         """
         INSERT INTO user_profile
             (glucose_sensitivity, lag_window, trigger_symptoms,
-             noise_tolerance, data_version, computed_at)
-        VALUES (%s, %s, %s, %s, %s, %s)
+             noise_tolerance, data_version, computed_at,
+             emotion_risk_coupling, emotion_volatility,
+             emotion_amplification, emotion_active)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             params.glucose_sensitivity,
@@ -263,6 +286,10 @@ def _save_profile(params: ProfileParams) -> None:
             params.noise_tolerance,
             params.data_version,
             params.computed_at,
+            params.emotion_risk_coupling,
+            params.emotion_volatility,
+            params.emotion_amplification,
+            1 if params.emotion_active else 0,
         ),
     )
     conn.commit()
@@ -279,7 +306,9 @@ def get_profile() -> ProfileParams:
     cursor.execute(
         """
         SELECT glucose_sensitivity, lag_window, trigger_symptoms,
-               noise_tolerance, data_version, computed_at
+               noise_tolerance, data_version, computed_at,
+               emotion_risk_coupling, emotion_volatility,
+               emotion_amplification, emotion_active
         FROM user_profile LIMIT 1
         """
     )
@@ -303,6 +332,11 @@ def get_profile() -> ProfileParams:
         noise_tolerance     = float(row[3]) if row[3] is not None else 15.0,
         data_version        = int(row[4])   if row[4] is not None else 0,
         computed_at         = str(row[5])   if row[5] else "",
+        # Phase 3A: Emotion fields
+        emotion_risk_coupling = float(row[6]) if len(row) > 6 and row[6] is not None else 0.0,
+        emotion_volatility    = float(row[7]) if len(row) > 7 and row[7] is not None else 0.0,
+        emotion_amplification = float(row[8]) if len(row) > 8 and row[8] is not None else 1.0,
+        emotion_active        = bool(row[9]) if len(row) > 9 and row[9] else False,
         # Infer activation flags from stored values
         glucose_active      = row[0] is not None and float(row[0]) != 1.0,
         lag_active          = row[1] is not None and int(row[1]) != 7,

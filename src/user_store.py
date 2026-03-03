@@ -37,6 +37,8 @@ class UserDiary:
     trend_score: float
     baseline_score: float
     created_at: str
+    emotion_score: float | None = None     # Phase 3A: wellness score (0-100)
+    anxiety_score: float | None = None     # Phase 3A: anxiety score (0-100)
 
 
 # ── Writes ─────────────────────────────────────────────────────────────────
@@ -53,6 +55,12 @@ def save_diary(
     embedding: list[float],
 ) -> int:
     """Insert a new diary entry and refresh the personal baseline."""
+    from .emotion import compute_emotion_score, compute_anxiety_score
+
+    # Phase 3A: Compute emotion scores
+    emotion_score = compute_emotion_score(diary_text)
+    anxiety_score = compute_anxiety_score(diary_text)
+
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -61,8 +69,8 @@ def save_diary(
         INSERT INTO user_diaries
             (diary_date, diary_text, glucose_level, blood_pressure,
              risk_score, risk_level, trajectory_score, trend_score,
-             baseline_score, diary_embedding)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             baseline_score, diary_embedding, emotion_score, anxiety_score)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             date.today().isoformat(),
@@ -75,6 +83,8 @@ def save_diary(
             round(trend_score, 2),
             round(baseline_score, 2),
             vec_sql(embedding),
+            round(emotion_score, 1),
+            round(anxiety_score, 1),
         ),
     )
     conn.commit()
@@ -151,7 +161,7 @@ def get_recent_diaries(n: int = 30) -> list[UserDiary]:
         """
         SELECT id, diary_date, diary_text, glucose_level, blood_pressure,
                risk_score, risk_level, trajectory_score, trend_score,
-               baseline_score, created_at
+               baseline_score, created_at, emotion_score, anxiety_score
         FROM user_diaries
         ORDER BY id DESC
         LIMIT %s
@@ -175,6 +185,8 @@ def get_recent_diaries(n: int = 30) -> list[UserDiary]:
             trend_score=float(r[8]) if r[8] is not None else 0.0,
             baseline_score=float(r[9]) if r[9] is not None else 0.0,
             created_at=str(r[10]),
+            emotion_score=float(r[11]) if len(r) > 11 and r[11] is not None else None,
+            anxiety_score=float(r[12]) if len(r) > 12 and r[12] is not None else None,
         )
         for r in rows
     ]
