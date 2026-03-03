@@ -165,8 +165,11 @@ def ingest_records(records: list[DiaryRecord]) -> None:
     conn = get_connection()
     cursor = conn.cursor()
 
+    # OceanBase supports VECTOR INDEX in CREATE TABLE but not in ALTER TABLE ADD.
+    # Use the standalone CREATE VECTOR INDEX statement instead.
     cursor.execute(
-        "ALTER TABLE patient_diaries ADD VECTOR INDEX idx_pop_vec(diary_embedding)"
+        "CREATE VECTOR INDEX idx_pop_vec"
+        " ON patient_diaries(diary_embedding)"
         " WITH (distance=cosine, type=hnsw, lib=vsag)"
     )
     conn.commit()
