@@ -34,7 +34,7 @@ def main() -> None:
     wait_for_seekdb()
 
     # 2. Schema
-    print("\n📐 Setting up schema…")
+    print("\n📐 Setting up schema (patient_diaries + user_diaries + user_baseline)…")
     setup_schema(drop_existing=True)
 
     # 3. Generate data

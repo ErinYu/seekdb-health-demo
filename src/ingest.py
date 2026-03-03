@@ -1,38 +1,19 @@
 """
-Embed all diary records with sentence-transformers and bulk-insert into SeekDB.
-
-Embedding model: paraphrase-multilingual-MiniLM-L12-v2
-  • 384 dimensions
-  • Supports Chinese
-  • Apache 2.0 license
-  • ~120 MB download (cached after first run)
+Embed synthetic population records and bulk-insert into SeekDB.
 """
 
-import json
 from tqdm import tqdm
-from sentence_transformers import SentenceTransformer
 
 from .db import get_connection
-from .schema import CREATE_DATABASE, CREATE_TABLE, DROP_TABLE, DATABASE
+from .embedder import get_embedder, vec_sql
+from .schema import CREATE_DATABASE, CREATE_TABLE, CREATE_USER_DIARIES, CREATE_USER_BASELINE, DROP_TABLE, DATABASE
 from .data_generator import DiaryRecord
 
-_EMBED_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
 _BATCH_SIZE = 64
 
 
-def _load_embedder() -> SentenceTransformer:
-    print(f"📦 Loading embedding model '{_EMBED_MODEL}' (downloads once, ~120 MB)…")
-    return SentenceTransformer(_EMBED_MODEL)
-
-
-def _vec_to_sql(vec: list[float]) -> str:
-    """Convert a Python list to SeekDB VECTOR literal '[0.1,0.2,…]'."""
-    return "[" + ",".join(f"{v:.6f}" for v in vec) + "]"
-
-
 def setup_schema(drop_existing: bool = False) -> None:
-    """Create the database and table (optionally drop first)."""
-    # Connect without a database to create it
+    """Create the database and all tables."""
     conn = get_connection(database=None)
     cursor = conn.cursor()
     cursor.execute(CREATE_DATABASE)
@@ -43,18 +24,21 @@ def setup_schema(drop_existing: bool = False) -> None:
     conn = get_connection()
     cursor = conn.cursor()
     if drop_existing:
-        cursor.execute(DROP_TABLE)
-        print("🗑  Dropped existing table.")
+        for tbl in ("user_baseline", "user_diaries", "patient_diaries"):
+            cursor.execute(f"DROP TABLE IF EXISTS {tbl}")
+        print("🗑  Dropped existing tables.")
     cursor.execute(CREATE_TABLE)
+    cursor.execute(CREATE_USER_DIARIES)
+    cursor.execute(CREATE_USER_BASELINE)
     conn.commit()
     cursor.close()
     conn.close()
-    print("✅ Schema ready.")
+    print("✅ Schema ready (3 tables).")
 
 
 def ingest_records(records: list[DiaryRecord]) -> None:
-    """Embed and insert all records into SeekDB."""
-    embedder = _load_embedder()
+    """Embed and insert all population records into SeekDB."""
+    embedder = get_embedder()
 
     texts = [r.diary_text for r in records]
     print(f"⚙️  Embedding {len(texts)} diary entries…")
@@ -84,9 +68,8 @@ def ingest_records(records: list[DiaryRecord]) -> None:
             rec.bmi,
             int(rec.is_pre_danger),
             rec.days_to_danger,
-            _vec_to_sql(emb.tolist()),
+            vec_sql(emb.tolist()),
         ))
-
         if len(batch_data) >= _BATCH_SIZE:
             cursor.executemany(insert_sql, batch_data)
             conn.commit()
@@ -102,7 +85,6 @@ def ingest_records(records: list[DiaryRecord]) -> None:
 
 
 def get_stats() -> dict:
-    """Return basic stats about the ingested data."""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM patient_diaries")

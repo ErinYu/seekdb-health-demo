@@ -17,23 +17,9 @@ Why hybrid beats either alone in this clinical setting:
 
 import json
 from dataclasses import dataclass
-from sentence_transformers import SentenceTransformer
 
 from .db import get_connection
-
-_EMBED_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
-_embedder: SentenceTransformer | None = None
-
-
-def _get_embedder() -> SentenceTransformer:
-    global _embedder
-    if _embedder is None:
-        _embedder = SentenceTransformer(_EMBED_MODEL)
-    return _embedder
-
-
-def _vec_to_list(vec) -> list[float]:
-    return [round(float(v), 6) for v in vec]
+from .embedder import embed, vec_sql
 
 
 @dataclass
@@ -67,8 +53,7 @@ def hybrid_search(query_text: str, k: int = 15) -> list[SearchHit]:
     Run DBMS_HYBRID_SEARCH.SEARCH on patient_diaries.
     Returns up to k ranked hits with individual scores.
     """
-    embedder = _get_embedder()
-    query_vec = _vec_to_list(embedder.encode([query_text])[0])
+    query_vec = embed(query_text)
 
     parm = {
         "query": {
@@ -137,8 +122,7 @@ def hybrid_search(query_text: str, k: int = 15) -> list[SearchHit]:
 
 def _vector_only_search(query_text: str, k: int = 15) -> list[dict]:
     """Pure vector search via approximated ORDER BY vector distance."""
-    embedder = _get_embedder()
-    query_vec = "[" + ",".join(f"{v:.6f}" for v in embedder.encode([query_text])[0]) + "]"
+    query_vec = vec_sql(embed(query_text))
 
     conn = get_connection()
     cursor = conn.cursor()
@@ -146,7 +130,7 @@ def _vector_only_search(query_text: str, k: int = 15) -> list[dict]:
         SELECT patient_id, diary_text, glucose_level, is_pre_danger, days_to_danger,
                COSINE_DISTANCE(diary_embedding, '{query_vec}') AS dist
         FROM patient_diaries
-        ORDER BY dist ASC APPROXIMATE
+        ORDER BY dist ASC
         LIMIT {k}
     """
     cursor.execute(sql)
