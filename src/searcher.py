@@ -48,22 +48,34 @@ class RiskAssessment:
     hybrid_pre_danger_ratio: float
 
 
-def hybrid_search(query_text: str, k: int = 15) -> list[SearchHit]:
+def hybrid_search(
+    query_text: str,
+    k: int = 15,
+    boost_keywords: list[str] | None = None,
+) -> list[SearchHit]:
     """
     Run DBMS_HYBRID_SEARCH.SEARCH on patient_diaries.
     Returns up to k ranked hits with individual scores.
+
+    boost_keywords: personal trigger symptoms (from user_profile) that get
+    a higher BM25 weight (boost=2.5) in the bool.should clause.
     """
     query_vec = embed(query_text)
 
+    should_clauses = [
+        {"match": {"diary_text": query_text}},
+        {"match": {"symptoms_keywords": query_text}},
+    ]
+
+    # Inject personalised keyword boosts
+    if boost_keywords:
+        for kw in boost_keywords:
+            should_clauses.append({
+                "match": {"diary_text": {"query": kw, "boost": 2.5}}
+            })
+
     parm = {
-        "query": {
-            "bool": {
-                "should": [
-                    {"match": {"diary_text": query_text}},
-                    {"match": {"symptoms_keywords": query_text}},
-                ]
-            }
-        },
+        "query": {"bool": {"should": should_clauses}},
         "knn": {
             "field": "diary_embedding",
             "k": k,
@@ -180,14 +192,18 @@ def _keyword_only_search(query_text: str, k: int = 15) -> list[dict]:
     ]
 
 
-def assess_risk(query_text: str, k: int = 15) -> RiskAssessment:
+def assess_risk(
+    query_text: str,
+    k: int = 15,
+    boost_keywords: list[str] | None = None,
+) -> RiskAssessment:
     """
     Full risk assessment:
-      1. Hybrid search (main result)
+      1. Hybrid search (main result, with optional personal keyword boosts)
       2. Vector-only & keyword-only (for comparison visualisation)
       3. Compute risk score from % of pre-danger hits in hybrid results
     """
-    hybrid_hits = hybrid_search(query_text, k=k)
+    hybrid_hits = hybrid_search(query_text, k=k, boost_keywords=boost_keywords)
 
     # ── Comparison searches (best-effort; fall back gracefully) ─────────────
     try:

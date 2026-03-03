@@ -37,6 +37,7 @@ from typing import Optional
 from .searcher import RiskAssessment
 from .trend_analyzer import TrendAnalysis
 from .baseline import get_baseline_label, MIN_ENTRIES
+from .user_profile import ProfileParams
 
 
 LEVEL_THRESHOLDS = {"low": 35, "medium": 60}   # < 35 low, 35–60 medium, > 60 high
@@ -78,26 +79,46 @@ def fuse(
     baseline_score_raw: Optional[float],
     entry_count: int,
     calibration_factor: float = 1.0,
+    glucose_provided: bool = False,
+    prev_trend_score: float = 0.0,
+    profile: Optional[ProfileParams] = None,
 ) -> DetailedScore:
     """Combine the three signals into a DetailedScore.
 
-    calibration_factor is the personal sensitivity adjustment derived from
-    historical feedback (see feedback.py).  1.0 = no adjustment.
+    calibration_factor  — global feedback-loop multiplier (Sprint 3).
+    glucose_provided    — whether the user entered a glucose value today.
+    prev_trend_score    — last diary's trend score, for noise-tolerance damping.
+    profile             — Phase 3 personalisation params (defaults = no-op).
     """
+    if profile is None:
+        profile = ProfileParams()
 
     traj = assessment.risk_score          # already 0–100
     trend_val = trend.trend_score if trend else 0.0
     base_val  = baseline_score_raw if baseline_score_raw is not None else -1.0
 
+    # ── Phase 3: glucose_sensitivity ────────────────────────────────────────
+    # When the user provided a reading today, scale trajectory by personal factor.
+    if glucose_provided and profile.glucose_sensitivity != 1.0:
+        traj = round(min(100.0, max(0.0, traj * profile.glucose_sensitivity)), 1)
+
+    # ── Phase 3: noise_tolerance ────────────────────────────────────────────
+    # If the trend change is within the user's normal variation band, dampen it.
+    trend_weight_personal   = 0.30
+    trend_weight_population = 0.30
+    if trend and abs(trend_val - prev_trend_score) < profile.noise_tolerance:
+        trend_weight_personal   *= 0.6
+        trend_weight_population *= 0.6
+
     # ── Weight fusion ───────────────────────────────────────────────────────
     if entry_count >= MIN_ENTRIES and base_val >= 0:
-        final = 0.45 * traj + 0.30 * trend_val + 0.25 * base_val
+        final = 0.45 * traj + trend_weight_personal * trend_val + 0.25 * base_val
         mode  = "personal"
     else:
-        final = 0.70 * traj + 0.30 * trend_val
+        final = 0.70 * traj + trend_weight_population * trend_val
         mode  = "population"
 
-    # Apply personal calibration (feedback loop)
+    # Apply global calibration (feedback loop, Sprint 3)
     final = round(min(100.0, max(0.0, final * calibration_factor)), 1)
 
     # ── Explanations ────────────────────────────────────────────────────────

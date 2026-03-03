@@ -36,6 +36,7 @@ from src.feedback import (
     get_calibration_stats, get_sensitivity_factor,
     PendingFeedback, MIN_FEEDBACK,
 )
+from src.user_profile import get_profile, maybe_refresh_profile, ProfileParams
 
 
 # ── Font setup ─────────────────────────────────────────────────────────────
@@ -232,16 +233,30 @@ def _glucose_chart(points):
 def _full_analysis(diary_text: str, glucose: float | None, bp: int | None) -> DetailedScore:
     """
     Run the full 3-signal pipeline and fuse into a DetailedScore.
-    Applies personal calibration factor if enough feedback has been collected.
+    Applies personal calibration factor (Sprint 3) and personal profile (Phase 3).
     """
     emb = embed(diary_text)
 
-    # 1. Population trajectory
-    assessment = assess_risk(diary_text, k=15)
+    # Phase 3: refresh profile if new feedbacks have arrived, then load
+    try:
+        maybe_refresh_profile()
+        profile = get_profile()
+    except Exception:
+        profile = ProfileParams()
 
-    # 2. Personal trend
-    recent = get_recent_diaries(n=7)
-    trend  = analyze_trend(recent)
+    # 1. Population trajectory — inject personal trigger-symptom boosts
+    assessment = assess_risk(
+        diary_text, k=15,
+        boost_keywords=profile.trigger_symptoms or None,
+    )
+
+    # 2. Personal trend — use personal lag_window
+    n_recent = profile.lag_window * 2
+    recent   = get_recent_diaries(n=n_recent)
+    trend    = analyze_trend(recent, window=profile.lag_window)
+
+    # Previous trend score for noise-tolerance damping
+    prev_trend_score = recent[0].trend_score if recent else 0.0
 
     # 3. Personal baseline
     entry_count   = get_diary_count()
@@ -252,11 +267,17 @@ def _full_analysis(diary_text: str, glucose: float | None, bp: int | None) -> De
     else:
         base_score = None
 
-    # 4. Personal calibration from feedback history
+    # 4. Global calibration from feedback history (Sprint 3)
     calibration_factor = get_sensitivity_factor()
 
-    # Fuse
-    ds = fuse(assessment, trend, base_score, entry_count, calibration_factor)
+    # Fuse (with Phase 3 profile params)
+    ds = fuse(
+        assessment, trend, base_score, entry_count,
+        calibration_factor=calibration_factor,
+        glucose_provided=(glucose is not None),
+        prev_trend_score=prev_trend_score,
+        profile=profile,
+    )
 
     # Carry comparison ratios and raw objects for later use
     ds._kw_ratio   = assessment.keyword_only_pre_danger_ratio
@@ -694,6 +715,73 @@ def _calibration_html() -> str:
 </div>"""
 
 
+def _profile_params_html() -> str:
+    """Render the Phase 3 personal parameter activation card for Tab 2."""
+    try:
+        p = get_profile()
+    except Exception:
+        return ""
+
+    def _param_row(icon: str, label: str, value: str, active: bool,
+                   need: str) -> str:
+        if active:
+            badge = f"<span style='color:#22c55e;font-weight:600;'>{value}</span>"
+        else:
+            badge = (
+                f"<span style='color:#94a3b8;font-size:0.78rem;'>"
+                f"积累中（{need}）</span>"
+            )
+        return (
+            f"<div style='display:flex;justify-content:space-between;"
+            f"font-size:0.82rem;padding:4px 0;border-bottom:1px solid #f1f5f9;'>"
+            f"<span style='color:#374151;'>{icon} {label}</span>{badge}</div>"
+        )
+
+    active_count = sum([
+        p.glucose_active, p.lag_active, p.triggers_active, p.noise_active
+    ])
+
+    # Build parameter value strings
+    if p.glucose_active:
+        g_val = ("偏高响应" if p.glucose_sensitivity > 1.05
+                 else ("偏低响应" if p.glucose_sensitivity < 0.95
+                       else "正常"))
+        g_val += f"（{p.glucose_sensitivity:.2f}×）"
+    else:
+        g_val = ""
+
+    lag_val      = f"约 {p.lag_window} 天"      if p.lag_active     else ""
+    trigger_val  = "、".join(p.trigger_symptoms) if p.triggers_active else ""
+    noise_val    = f"±{p.noise_tolerance:.0f} 分" if p.noise_active    else ""
+
+    rows = (
+        _param_row("🩸", "血糖敏感度",  g_val,      p.glucose_active,
+                   f"需 {5} 条含血糖的反馈")
+        + _param_row("⏱️", "预警提前量", lag_val,    p.lag_active,
+                     f"需 {3} 次确认「变差」")
+        + _param_row("🔑", "个人风险词", trigger_val, p.triggers_active,
+                     f"需 {5} 次确认「变差」")
+        + _param_row("📊", "正常波动带", noise_val,   p.noise_active,
+                     f"需 {10} 条记录")
+    )
+
+    computed_tip = (
+        f"<div style='font-size:0.72rem;color:#94a3b8;margin-top:6px;'>"
+        f"上次更新：{p.computed_at or '尚未计算'}</div>"
+        if p.computed_at else ""
+    )
+
+    return f"""
+<div style="font-family:sans-serif;padding:14px 16px;border-radius:10px;
+            background:#f8fafc;border:1px solid #e2e8f0;margin-top:8px;">
+  <div style="font-size:0.9rem;font-weight:600;color:#374151;margin-bottom:8px;">
+    🎯 个人参数（已激活 {active_count}/4 个）
+  </div>
+  {rows}
+  {computed_tip}
+</div>"""
+
+
 def load_profile():
     diaries     = get_recent_diaries(n=30)
     glucose     = get_glucose_trend(days=30)
@@ -730,7 +818,7 @@ def load_profile():
     <div style="font-size:1.8rem;">{level_icons.get(last_level,"")}</div>
     <div style="font-size:0.8rem;color:#64748b;">最近一次评估结果</div>
   </div>
-</div>""" + _calibration_html()
+</div>""" + _calibration_html() + _profile_params_html()
     else:
         stats_html = "<p style='color:#9ca3af'>还没有任何记录，请先在「今日检测」标签页提交一条日记。</p>"
 

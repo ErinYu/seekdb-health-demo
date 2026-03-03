@@ -114,6 +114,19 @@ CREATE TABLE IF NOT EXISTS risk_feedbacks (
 )
 """
 
+# ── Personal profile (Phase 3) ────────────────────────────────────────────
+CREATE_USER_PROFILE = """
+CREATE TABLE IF NOT EXISTS user_profile (
+    id                  INT AUTO_INCREMENT PRIMARY KEY,
+    glucose_sensitivity FLOAT       DEFAULT 1.0,
+    lag_window          INT         DEFAULT 7,
+    trigger_symptoms    TEXT,
+    noise_tolerance     FLOAT       DEFAULT 15.0,
+    data_version        INT         DEFAULT 0,
+    computed_at         TIMESTAMP   DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
 # Back-compat alias used by the original ingest.py
 CREATE_TABLE = CREATE_POPULATION_TABLE
 DROP_TABLE   = "DROP TABLE IF EXISTS patient_diaries"

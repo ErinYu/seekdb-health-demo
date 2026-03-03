@@ -88,19 +88,33 @@ def _rule_based_explanation(assessment: RiskAssessment) -> str:
 def generate_analysis(query: str, assessment: RiskAssessment) -> str:
     """
     Generate a natural-language risk explanation.
-    Uses Claude if ANTHROPIC_API_KEY is set; otherwise falls back to rule-based.
+    Uses Claude (via Zenmux or direct Anthropic API); otherwise falls back to rule-based.
     """
-    api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    if not _HAS_ANTHROPIC or not api_key or not api_key.startswith("sk-"):
+    zenmux_key = os.getenv("ZENMUX_API_KEY", "")
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+
+    if _HAS_ANTHROPIC and zenmux_key:
+        client = anthropic.Anthropic(
+            api_key=zenmux_key,
+            base_url="https://zenmux.ai/api/anthropic"
+        )
+        context = _build_context(query, assessment)
+        message = client.messages.create(
+            model="anthropic/claude-opus-4.6",
+            max_tokens=1024,
+            system=_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": context}],
+        )
+        return message.content[0].text
+    elif _HAS_ANTHROPIC and anthropic_key and anthropic_key.startswith("sk-"):
+        client = anthropic.Anthropic(api_key=anthropic_key)
+        context = _build_context(query, assessment)
+        message = client.messages.create(
+            model="claude-opus-4-6",
+            max_tokens=512,
+            system=_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": context}],
+        )
+        return message.content[0].text
+    else:
         return _rule_based_explanation(assessment)
-
-    client = anthropic.Anthropic(api_key=api_key)
-    context = _build_context(query, assessment)
-
-    message = client.messages.create(
-        model="claude-opus-4-6",
-        max_tokens=512,
-        system=_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": context}],
-    )
-    return message.content[0].text
