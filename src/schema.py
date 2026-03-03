@@ -76,6 +76,33 @@ CREATE TABLE IF NOT EXISTS user_baseline (
 )
 """
 
+# ── Experiment tracking ────────────────────────────────────────────────────
+CREATE_EXPERIMENTS = """
+CREATE TABLE IF NOT EXISTS experiments (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    name        VARCHAR(200) NOT NULL,
+    variable    VARCHAR(200),
+    hypothesis  TEXT,
+    status      VARCHAR(20) DEFAULT 'active',
+    start_date  DATE        NOT NULL,
+    target_days INT         DEFAULT 7,
+    created_at  TIMESTAMP   DEFAULT CURRENT_TIMESTAMP
+)
+"""
+
+CREATE_EXPERIMENT_LOGS = """
+CREATE TABLE IF NOT EXISTS experiment_logs (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    experiment_id   INT         NOT NULL,
+    log_date        DATE        NOT NULL,
+    executed        TINYINT(1)  NOT NULL,
+    diary_id        INT,
+    note            VARCHAR(500),
+    created_at      TIMESTAMP   DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_exp_date (experiment_id, log_date)
+)
+"""
+
 # Back-compat alias used by the original ingest.py
 CREATE_TABLE = CREATE_POPULATION_TABLE
 DROP_TABLE   = "DROP TABLE IF EXISTS patient_diaries"

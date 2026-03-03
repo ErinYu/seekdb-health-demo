@@ -27,6 +27,11 @@ from src.user_store import (
 )
 from src.embedder import embed
 from src.agent import generate_analysis
+from src.experiments import (
+    create_experiment, get_active_experiments, get_all_experiments,
+    log_day, abandon_experiment, analyze_experiment,
+    Experiment, ExperimentResult,
+)
 
 
 # ── Font setup ─────────────────────────────────────────────────────────────
@@ -320,7 +325,199 @@ def run_check(diary_text: str, glucose_val: float | None, bp_val: int | None):
             days_info,
         ])
 
-    return combined_html, chart, analysis, hits_table, analysis, ds
+    # Active experiments checkin panel (shown after diary submission)
+    active = get_active_experiments()
+    exp_panel_html = _experiment_checkin_panel(active)
+
+    return combined_html, chart, analysis, hits_table, analysis, ds, exp_panel_html
+
+
+# ── Experiment UI helpers ──────────────────────────────────────────────────
+
+def _experiment_checkin_panel(experiments: list[Experiment]) -> str:
+    if not experiments:
+        return ""
+    cards = []
+    for e in experiments:
+        pct = e.progress_pct
+        cards.append(f"""
+<div style="font-family:sans-serif;padding:12px 14px;border-radius:10px;
+            background:#fffbeb;border:1px solid #fde68a;margin-bottom:8px;">
+  <div style="font-weight:600;color:#92400e;">🧪 {e.name}</div>
+  <div style="font-size:0.8rem;color:#78716c;margin:3px 0;">
+    测试变量：{e.variable} &nbsp;·&nbsp; 进度 {e.days_logged}/{e.target_days} 天
+  </div>
+  <div style="background:#fef3c7;border-radius:99px;height:6px;margin:6px 0;">
+    <div style="width:{pct}%;height:100%;background:#f59e0b;border-radius:99px;"></div>
+  </div>
+  <div style="font-size:0.78rem;color:#92400e;">
+    今天是否执行了「{e.variable}」？ — 请在「🧪 健康实验」标签页打卡
+  </div>
+</div>""")
+    return (
+        "<div style='margin-top:12px;'><b style='font-size:0.85rem;color:#374151;'>"
+        "进行中的实验</b>" + "".join(cards) + "</div>"
+    )
+
+
+def _experiment_result_chart(result: ExperimentResult):
+    """Bar chart: risk & glucose comparison between executed/skipped days."""
+    has_glucose = (result.avg_glucose_executed is not None
+                   and result.avg_glucose_skipped is not None)
+    cols = 2 if has_glucose else 1
+    fig, axes = plt.subplots(1, cols + 1, figsize=(5 * (cols + 1), 3.2))
+    if cols == 1:
+        axes = [axes, None, axes]
+
+    # Risk score
+    ax = axes[0]
+    groups = ["Executed", "Skipped"]
+    vals   = [result.avg_risk_executed, result.avg_risk_skipped]
+    colors = ["#86efac", "#fca5a5"]
+    bars = ax.bar(groups, vals, color=colors, width=0.45)
+    ax.set_ylim(0, 105)
+    ax.set_title("Risk Score", fontsize=9)
+    ax.set_ylabel("Avg Risk (0-100)", fontsize=8)
+    ax.spines[["top","right"]].set_visible(False)
+    ax.yaxis.grid(True, linestyle="--", alpha=0.4); ax.set_axisbelow(True)
+    for b, v in zip(bars, vals):
+        ax.text(b.get_x()+b.get_width()/2, v+1, f"{v:.0f}", ha="center", fontsize=10, fontweight="bold")
+
+    # Glucose (if available)
+    if has_glucose:
+        ax2 = axes[1]
+        gvals = [result.avg_glucose_executed, result.avg_glucose_skipped]
+        bars2 = ax2.bar(groups, gvals, color=colors, width=0.45)
+        ax2.set_title("Glucose (mg/dL)", fontsize=9)
+        ax2.set_ylabel("Avg Glucose", fontsize=8)
+        ax2.spines[["top","right"]].set_visible(False)
+        ax2.yaxis.grid(True, linestyle="--", alpha=0.4); ax2.set_axisbelow(True)
+        for b, v in zip(bars2, gvals):
+            ax2.text(b.get_x()+b.get_width()/2, v+1, f"{v:.0f}", ha="center", fontsize=10, fontweight="bold")
+
+    # Semantic distance gauge
+    ax3 = axes[-1]
+    ax3.axis("off")
+    if result.semantic_distance is not None:
+        sd = result.semantic_distance
+        level_color = "#ef4444" if sd > 0.15 else ("#f59e0b" if sd > 0.05 else "#22c55e")
+        label = "Significant" if sd > 0.15 else ("Moderate" if sd > 0.05 else "Minimal")
+        ax3.text(0.5, 0.65, f"{sd:.3f}", ha="center", va="center",
+                 fontsize=26, fontweight="bold", color=level_color,
+                 transform=ax3.transAxes)
+        ax3.text(0.5, 0.38, f"Semantic distance\n({label})", ha="center", va="center",
+                 fontsize=8, color="#64748b", transform=ax3.transAxes)
+        ax3.text(0.5, 0.12, "diary embedding difference\nexecuted vs skipped days",
+                 ha="center", va="center", fontsize=7, color="#94a3b8",
+                 transform=ax3.transAxes)
+
+    plt.tight_layout()
+    return fig
+
+
+def _timeline_html(result: ExperimentResult) -> str:
+    if not result.day_logs:
+        return ""
+    dots = []
+    for log in result.day_logs:
+        color = "#22c55e" if log.executed else "#e5e7eb"
+        icon  = "✓" if log.executed else "·"
+        dots.append(
+            f"<div title='{log.log_date}' style='width:28px;height:28px;"
+            f"border-radius:50%;background:{color};display:flex;align-items:center;"
+            f"justify-content:center;font-size:0.8rem;color:white;font-weight:bold;"
+            f"border:1px solid #d1d5db;cursor:default;'>{icon}</div>"
+        )
+    return (
+        "<div style='font-family:sans-serif;padding:10px 14px;border-radius:10px;"
+        "background:#f8fafc;border:1px solid #e2e8f0;margin-top:8px;'>"
+        "<div style='font-size:0.82rem;color:#64748b;margin-bottom:6px;'>执行日历</div>"
+        "<div style='display:flex;gap:6px;flex-wrap:wrap;'>"
+        + "".join(dots)
+        + "</div><div style='font-size:0.72rem;color:#94a3b8;margin-top:5px;'>"
+        "🟢 已执行 &nbsp; ⬜ 已跳过</div></div>"
+    )
+
+
+# ── Tab 3 handlers ─────────────────────────────────────────────────────────
+
+def create_exp_handler(name, variable, hypothesis, target_days):
+    if not name.strip() or not variable.strip():
+        return gr.update(value="<p style='color:#ef4444'>请填写实验名称和测试变量</p>"), \
+               *_refresh_exp_ui()
+    try:
+        create_experiment(name.strip(), variable.strip(), hypothesis.strip(), int(target_days))
+        msg = f"<p style='color:#22c55e'>✅ 实验「{name}」已创建，开始每天打卡吧！</p>"
+    except Exception as e:
+        msg = f"<p style='color:#ef4444'>创建失败：{e}</p>"
+    return gr.update(value=msg), *_refresh_exp_ui()
+
+
+def _refresh_exp_ui():
+    """Return (active_html, all_choices, all_results_html) for UI refresh."""
+    active = get_active_experiments()
+    all_exps = get_all_experiments()
+
+    # Active experiments panel
+    if active:
+        cards = []
+        for e in active:
+            pct = e.progress_pct
+            cards.append(f"""
+<div style="font-family:sans-serif;padding:12px 14px;border-radius:10px;
+            background:#f0fdf4;border:1px solid #bbf7d0;margin-bottom:8px;">
+  <div style="display:flex;justify-content:space-between;align-items:center;">
+    <span style="font-weight:700;color:#14532d;">🧪 {e.name}</span>
+    <span style="font-size:0.78rem;background:#dcfce7;color:#16a34a;
+                 padding:2px 8px;border-radius:99px;">{e.status}</span>
+  </div>
+  <div style="font-size:0.82rem;color:#64748b;margin:4px 0;">
+    变量：{e.variable}<br>
+    假设：{e.hypothesis or '未填写'}
+  </div>
+  <div style="font-size:0.78rem;color:#374151;margin-top:4px;">
+    进度：{e.days_logged}/{e.target_days} 天（{pct}%）
+  </div>
+  <div style="background:#e2e8f0;border-radius:99px;height:6px;margin:4px 0;">
+    <div style="width:{pct}%;height:100%;background:#22c55e;border-radius:99px;"></div>
+  </div>
+  <div style="font-size:0.75rem;color:#6b7280;">实验 ID: {e.id}</div>
+</div>""")
+        active_html = "".join(cards)
+    else:
+        active_html = "<p style='color:#9ca3af'>暂无进行中的实验。</p>"
+
+    # Dropdown choices for result view and log
+    choices = [(f"[{e.status}] {e.name} (ID:{e.id})", e.id) for e in all_exps]
+    active_choices = [(f"{e.name} (ID:{e.id})", e.id) for e in active]
+
+    return active_html, gr.update(choices=choices), gr.update(choices=active_choices)
+
+
+def log_day_handler(exp_choice, executed_str):
+    if exp_choice is None:
+        return "<p style='color:#ef4444'>请先选择实验</p>", *_refresh_exp_ui()
+    executed = executed_str == "执行了 ✓"
+    try:
+        log_day(int(exp_choice), executed)
+        verb = "执行" if executed else "跳过"
+        msg = f"<p style='color:#22c55e'>✅ 今日已记录为「{verb}」</p>"
+    except Exception as e:
+        msg = f"<p style='color:#ef4444'>记录失败：{e}</p>"
+    return msg, *_refresh_exp_ui()
+
+
+def view_result_handler(exp_choice):
+    if exp_choice is None:
+        return "<p style='color:#9ca3af'>请选择一个实验查看结果</p>", None, ""
+    result = analyze_experiment(int(exp_choice))
+    if result is None:
+        return "<p style='color:#ef4444'>未找到该实验</p>", None, ""
+
+    conclusion_md = result.conclusion
+    chart = _experiment_result_chart(result) if result.is_significant else None
+    timeline = _timeline_html(result)
+    return conclusion_md, chart, timeline
 
 
 # ── Tab 2: my profile handler ──────────────────────────────────────────────
@@ -456,13 +653,17 @@ SELECT DBMS_HYBRID_SEARCH.SEARCH(
                         row_count=10, wrap=True,
                     )
 
+                    # Experiment checkin panel (appears after submission)
+                    exp_checkin_html = gr.HTML(visible=True)
+
             # hidden state to pass ds between callbacks
             _ds_state = gr.State()
 
             submit_btn.click(
                 fn=run_check,
                 inputs=[diary_in, glucose_in, bp_in],
-                outputs=[score_html, comp_chart, ai_analysis, hits_tbl, ai_analysis, _ds_state],
+                outputs=[score_html, comp_chart, ai_analysis, hits_tbl,
+                         ai_analysis, _ds_state, exp_checkin_html],
             )
 
         # ── Tab 2: My profile ──────────────────────────────────────────────
@@ -488,32 +689,111 @@ SELECT DBMS_HYBRID_SEARCH.SEARCH(
                 outputs=[stats_html, risk_chart_out, gluc_chart_out, history_tbl],
             )
 
-        # ── Tab 3: Health Experiments (Phase 2 placeholder) ───────────────
-        with gr.Tab("🧪 健康实验（即将推出）"):
-            gr.Markdown("""
-### 健康实验模式
+        # ── Tab 3: Health Experiments ──────────────────────────────────────
+        with gr.Tab("🧪 健康实验"):
+            with gr.Row():
 
-*本功能正在开发中（Phase 2）。*
+                # Left: create + log
+                with gr.Column(scale=1):
+                    gr.Markdown("### 创建新实验")
+                    exp_name_in = gr.Textbox(
+                        label="实验名称", placeholder="例：晚饭后散步30分钟的影响"
+                    )
+                    exp_var_in = gr.Textbox(
+                        label="测试变量（每日需确认执行与否）",
+                        placeholder="例：晚饭后步行30分钟"
+                    )
+                    exp_hyp_in = gr.Textbox(
+                        label="假设（可选）",
+                        placeholder="例：散步可能帮助降低次日血糖"
+                    )
+                    exp_days_in = gr.Slider(
+                        minimum=5, maximum=14, value=7, step=1,
+                        label="观察天数"
+                    )
+                    create_btn  = gr.Button("🚀 创建实验", variant="primary")
+                    create_msg  = gr.HTML()
 
+                    gr.Markdown("---\n### 今日打卡")
+                    log_exp_dd = gr.Dropdown(
+                        label="选择实验", choices=[], value=None
+                    )
+                    log_exec_radio = gr.Radio(
+                        choices=["执行了 ✓", "跳过了 ✗"],
+                        label="今天是否执行了实验变量？",
+                        value=None,
+                    )
+                    log_btn = gr.Button("📌 记录今日")
+                    log_msg = gr.HTML()
+
+                # Right: active experiments + results
+                with gr.Column(scale=2):
+                    gr.Markdown("### 进行中的实验")
+                    active_exp_html = gr.HTML()
+                    refresh_exp_btn = gr.Button("🔄 刷新", size="sm")
+
+                    gr.Markdown("---\n### 查看实验结果")
+                    result_exp_dd = gr.Dropdown(
+                        label="选择实验", choices=[], value=None
+                    )
+                    view_result_btn = gr.Button("📊 查看结果")
+                    result_conclusion = gr.Markdown()
+                    result_chart = gr.Plot()
+                    result_timeline = gr.HTML()
+
+                    gr.Markdown("""
 ---
-**核心概念**
+**原理说明**
 
-用户自己设计一个"变量控制实验"，系统追踪前后差异：
+实验结束后，SeekDB 做两层对比：
 
-```
-实验名称：晚饭后散步 30 分钟的影响
-自变量：是否执行晚餐后散步
-观察窗口：7 天
-对照基线：系统自动提取过去 21 天同期数据
-
-实验结束后系统输出：
-  散步执行的5天里，次日口渴描述的语义强度平均下降 34%
-  未执行的2天则维持原水平
-  相关系数：0.71（中等置信度，基于7天数据）
+```sql
+-- SQL 层：均值对比
+SELECT el.executed,
+       AVG(ud.risk_score)    AS avg_risk,
+       AVG(ud.glucose_level) AS avg_glucose
+FROM experiment_logs el
+JOIN user_diaries ud ON el.diary_id = ud.id
+GROUP BY el.executed;
 ```
 
-**重要**：系统只呈现相关性数据，所有因果解释由用户自己判断。
+```python
+# 向量层：主观感受差异
+exec_centroid = mean(embeddings for executed days)
+skip_centroid = mean(embeddings for skipped days)
+semantic_distance = cosine_distance(exec_centroid, skip_centroid)
+# 距离越大 = 两种状态下感受差异越大
+```
+
+⚠️ 所有结果均为**相关性**数据，不代表因果关系。
 """)
+
+            # ── Wiring ────────────────────────────────────────────────────
+            _exp_refresh_outputs = [active_exp_html, result_exp_dd, log_exp_dd]
+
+            create_btn.click(
+                fn=create_exp_handler,
+                inputs=[exp_name_in, exp_var_in, exp_hyp_in, exp_days_in],
+                outputs=[create_msg] + _exp_refresh_outputs,
+            )
+            log_btn.click(
+                fn=log_day_handler,
+                inputs=[log_exp_dd, log_exec_radio],
+                outputs=[log_msg] + _exp_refresh_outputs,
+            )
+            view_result_btn.click(
+                fn=view_result_handler,
+                inputs=[result_exp_dd],
+                outputs=[result_conclusion, result_chart, result_timeline],
+            )
+            refresh_exp_btn.click(
+                fn=lambda: _refresh_exp_ui(),
+                outputs=_exp_refresh_outputs,
+            )
+            demo.load(
+                fn=lambda: _refresh_exp_ui(),
+                outputs=_exp_refresh_outputs,
+            )
 
     gr.HTML("""
 <div style="text-align:center;font-size:0.75rem;color:#9ca3af;padding:16px 0;">

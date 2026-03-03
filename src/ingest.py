@@ -6,7 +6,10 @@ from tqdm import tqdm
 
 from .db import get_connection
 from .embedder import get_embedder, vec_sql
-from .schema import CREATE_DATABASE, CREATE_TABLE, CREATE_USER_DIARIES, CREATE_USER_BASELINE, DROP_TABLE, DATABASE
+from .schema import (
+    CREATE_DATABASE, CREATE_TABLE, CREATE_USER_DIARIES, CREATE_USER_BASELINE,
+    CREATE_EXPERIMENTS, CREATE_EXPERIMENT_LOGS, DROP_TABLE, DATABASE,
+)
 from .data_generator import DiaryRecord
 
 _BATCH_SIZE = 64
@@ -24,16 +27,19 @@ def setup_schema(drop_existing: bool = False) -> None:
     conn = get_connection()
     cursor = conn.cursor()
     if drop_existing:
-        for tbl in ("user_baseline", "user_diaries", "patient_diaries"):
+        for tbl in ("experiment_logs", "experiments",
+                    "user_baseline", "user_diaries", "patient_diaries"):
             cursor.execute(f"DROP TABLE IF EXISTS {tbl}")
         print("🗑  Dropped existing tables.")
     cursor.execute(CREATE_TABLE)
     cursor.execute(CREATE_USER_DIARIES)
     cursor.execute(CREATE_USER_BASELINE)
+    cursor.execute(CREATE_EXPERIMENTS)
+    cursor.execute(CREATE_EXPERIMENT_LOGS)
     conn.commit()
     cursor.close()
     conn.close()
-    print("✅ Schema ready (3 tables).")
+    print("✅ Schema ready (5 tables).")
 
 
 def ingest_records(records: list[DiaryRecord]) -> None:

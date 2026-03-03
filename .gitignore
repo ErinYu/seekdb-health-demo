@@ -24,6 +24,9 @@ seekdb.db/
 gradio_cached_examples/
 flagged/
 
+# Development logs (local only)
+log/
+
 # macOS
 .DS_Store
 
