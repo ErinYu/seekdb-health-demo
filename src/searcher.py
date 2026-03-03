@@ -17,7 +17,6 @@ Why hybrid beats either alone in this clinical setting:
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 
 from .db import get_connection
@@ -56,78 +55,49 @@ def hybrid_search(
     boost_keywords: list[str] | None = None,
 ) -> list[SearchHit]:
     """
-    Run DBMS_HYBRID_SEARCH.SEARCH on patient_diaries.
-    Returns up to k ranked hits with individual scores.
+    Run a direct vector KNN query on patient_diaries.
+    Returns up to k ranked hits ordered by cosine distance (ascending).
 
-    boost_keywords: personal trigger symptoms (from user_profile) that get
-    a higher BM25 weight (boost=2.5) in the bool.should clause.
+    boost_keywords: retained for API compatibility but unused (FTS removed).
     """
     query_vec = embed(query_text)
-
-    should_clauses = [
-        {"match": {"diary_text": query_text}},
-        {"match": {"symptoms_keywords": query_text}},
-    ]
-
-    # Inject personalised keyword boosts
-    if boost_keywords:
-        for kw in boost_keywords:
-            should_clauses.append({
-                "match": {"diary_text": {"query": kw, "boost": 2.5}}
-            })
-
-    parm = {
-        "query": {"bool": {"should": should_clauses}},
-        "knn": {
-            "field": "diary_embedding",
-            "k": k,
-            "query_vector": query_vec,
-        },
-        "_source": [
-            "patient_id",
-            "diary_date",
-            "diary_text",
-            "glucose_level",
-            "is_pre_danger",
-            "days_to_danger",
-            "_keyword_score",
-            "_semantic_score",
-        ],
-    }
+    query_vec_sql = vec_sql(query_vec)
 
     conn = get_connection()
     cursor = conn.cursor()
 
-    parm_json = json.dumps(parm, ensure_ascii=False)
-    cursor.execute(f"SET @parm = %s", (parm_json,))
-    cursor.execute(
-        "SELECT DBMS_HYBRID_SEARCH.SEARCH('patient_diaries', @parm)"
-    )
-    row = cursor.fetchone()
+    sql = """
+        SELECT patient_id, diary_date, diary_text, glucose_level, is_pre_danger,
+               days_to_danger,
+               VEC_COSINE_DISTANCE(diary_embedding, %s) as dist
+        FROM patient_diaries
+        ORDER BY dist ASC
+        LIMIT %s
+    """
+    cursor.execute(sql, (query_vec_sql, k))
+    rows = cursor.fetchall()
     cursor.close()
     conn.close()
 
-    if not row or not row[0]:
-        return []
-
-    raw = json.loads(row[0])
-    hits_raw = raw if isinstance(raw, list) else raw.get("hits", [])
-
     hits: list[SearchHit] = []
-    for h in hits_raw:
-        kw = float(h.get("_keyword_score") or 0)
-        sem = float(h.get("_semantic_score") or 0)
+    for row in rows:
+        patient_id, diary_date, diary_text, glucose_level, is_pre_danger, days_to_danger, dist = row
+        dist = float(dist) if dist is not None else 0.0
+        if 0.0 <= dist <= 1.0:
+            semantic_score = 1.0 - dist
+        else:
+            semantic_score = 1.0 / (1.0 + dist)
         hits.append(
             SearchHit(
-                patient_id=int(h.get("patient_id", 0)),
-                diary_date=str(h.get("diary_date", "")),
-                diary_text=str(h.get("diary_text", "")),
-                glucose_level=float(h.get("glucose_level") or 0),
-                is_pre_danger=bool(int(h.get("is_pre_danger", 0))),
-                days_to_danger=int(h.get("days_to_danger", -1)),
-                keyword_score=kw,
-                semantic_score=sem,
-                combined_score=kw * 0.4 + sem * 0.6,
+                patient_id=int(patient_id),
+                diary_date=str(diary_date),
+                diary_text=str(diary_text),
+                glucose_level=float(glucose_level or 0),
+                is_pre_danger=bool(int(is_pre_danger or 0)),
+                days_to_danger=int(days_to_danger if days_to_danger is not None else -1),
+                keyword_score=0.0,
+                semantic_score=semantic_score,
+                combined_score=semantic_score,
             )
         )
 

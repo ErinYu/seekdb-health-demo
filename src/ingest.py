@@ -82,9 +82,9 @@ def ingest_records(records: list[DiaryRecord]) -> None:
     """Embed and insert all population records into SeekDB.
 
     Bulk-load strategy (avoids OceanBase HNSW index pressure):
-      1. DROP the vector + fulltext indexes on patient_diaries
+      1. DROP the vector index on patient_diaries
       2. INSERT all rows in batches (no index maintenance overhead)
-      3. Recreate the indexes once after all data is loaded
+      3. Recreate the vector index once after all data is loaded
     """
     embedder = get_embedder()
 
@@ -119,17 +119,15 @@ def ingest_records(records: list[DiaryRecord]) -> None:
     conn = get_connection()
     cursor = conn.cursor()
 
-    # ── Step 1: drop indexes before bulk load ─────────────────────────────────
-    print("🗂  Dropping indexes for bulk load…")
-    for stmt in (
-        "ALTER TABLE patient_diaries DROP INDEX idx_pop_vec",
-        "ALTER TABLE patient_diaries DROP INDEX idx_pop_fts",
-    ):
-        try:
-            cursor.execute(stmt)
-            conn.commit()
-        except Exception:
-            pass  # index may not exist yet (first run after drop_existing)
+    # ── Step 1: drop the vector index before bulk load ───────────────────────
+    # The HNSW vector index is expensive during writes, so we drop it,
+    # insert all rows, then rebuild it once at the end.
+    print("🗂  Dropping vector index for bulk load…")
+    try:
+        cursor.execute("ALTER TABLE patient_diaries DROP INDEX idx_pop_vec")
+        conn.commit()
+    except Exception:
+        pass  # index may not exist yet (first run after drop_existing)
 
     # ── Step 2: insert rows ───────────────────────────────────────────────────
     print("💾 Inserting into SeekDB…")
@@ -162,20 +160,10 @@ def ingest_records(records: list[DiaryRecord]) -> None:
     cursor.close()
     conn.close()
 
-    # ── Step 3: rebuild indexes after all data is loaded ─────────────────────
-    # Use a fresh connection with a long net_read/write timeout so the server
-    # has time to build the IK fulltext index and HNSW vector index without
-    # the connection being dropped mid-operation.
-    print("🔨 Rebuilding indexes (this may take a few minutes)…")
+    # ── Step 3: rebuild the vector index ─────────────────────────────────────
+    print("🔨 Building vector index (this may take a minute)…")
     conn = get_connection()
     cursor = conn.cursor()
-
-    cursor.execute(
-        "ALTER TABLE patient_diaries ADD FULLTEXT INDEX idx_pop_fts"
-        "(diary_text, symptoms_keywords) WITH PARSER ik"
-    )
-    conn.commit()
-    print("   ✓ Fulltext index ready")
 
     cursor.execute(
         "ALTER TABLE patient_diaries ADD VECTOR INDEX idx_pop_vec(diary_embedding)"
