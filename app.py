@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import os
 import sys
+os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -1041,7 +1043,7 @@ with gr.Blocks(css=CSS, title="慢病早期预警") as demo:
                 # Left: input
                 with gr.Column(scale=1):
                     gr.Markdown("### 今天的健康日记")
-                    diary_in = gr.Textarea(
+                    diary_in = gr.Textbox(
                         placeholder="用自己的话描述今天的感受…",
                         lines=5, label="", show_label=False,
                     )
@@ -1247,4 +1249,12 @@ with gr.Blocks(css=CSS, title="慢病早期预警") as demo:
 
 
 if __name__ == "__main__":
+    import signal, subprocess
+    # Kill any process already using port 7860 so re-running app.py always works
+    result = subprocess.run(["lsof", "-ti", ":7860"], capture_output=True, text=True)
+    for pid in result.stdout.strip().split():
+        try:
+            os.kill(int(pid), signal.SIGTERM)
+        except ProcessLookupError:
+            pass
     demo.launch(server_name="0.0.0.0", server_port=7860, share=False)

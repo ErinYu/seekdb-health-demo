@@ -27,6 +27,8 @@ flagged/
 # Development logs (local only)
 log/
 
+docs/
+
 # macOS
 .DS_Store
 

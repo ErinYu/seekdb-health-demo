@@ -69,7 +69,7 @@ def hybrid_search(
     sql = """
         SELECT patient_id, diary_date, diary_text, glucose_level, is_pre_danger,
                days_to_danger,
-               VEC_COSINE_DISTANCE(diary_embedding, %s) as dist
+               COSINE_DISTANCE(diary_embedding, %s) as dist
         FROM patient_diaries
         ORDER BY dist ASC
         LIMIT %s
