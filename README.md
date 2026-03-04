@@ -23,6 +23,14 @@
 
 随着记录增多，系统会从「人群参考模式」切换到「个人模型模式」，评估越来越个性化。每次提交还会收到一条具体可执行的健康干预建议。
 
+<img width="3024" height="1648" alt="image" src="https://github.com/user-attachments/assets/486e65df-64d1-4994-bb66-160b12f937b4" />
+
+<img width="3024" height="1648" alt="image" src="https://github.com/user-attachments/assets/bd1d4b84-89fc-46b0-8390-ba52b031338f" />
+
+<img width="3024" height="1648" alt="image" src="https://github.com/user-attachments/assets/91efc9a5-f782-4f31-989e-6f19a1c768a1" />
+
+<img width="3024" height="1648" alt="image" src="https://github.com/user-attachments/assets/290733d6-f01b-4ed3-9ca8-197b7b1b7e07" />
+
 ---
 
 ### 用例二：健康趋势档案
@@ -33,6 +41,8 @@
 - **血糖变化曲线**：叠加临界参考线，直观看出控糖状态
 - **历史记录表**：近 30 条日记的日期、风险评分、血糖、日记摘要
 - **系统学习进度**：已收集的预警反馈数、预测相符率、当前矫正方向（见用例四）
+
+<img width="3024" height="1648" alt="image" src="https://github.com/user-attachments/assets/2fffff1e-ad53-42a9-9217-36d0d9c3f677" />
 
 ---
 
@@ -51,6 +61,12 @@
 
 所有实验结论均为相关性分析，不代表因果关系。
 
+<img width="3024" height="1648" alt="image" src="https://github.com/user-attachments/assets/c1059600-0bd1-4859-a268-63ba18f0a29a" />
+
+<img width="3024" height="1648" alt="image" src="https://github.com/user-attachments/assets/8ef34932-ed72-4c10-bead-204e6f815773" />
+
+<img width="3024" height="1648" alt="image" src="https://github.com/user-attachments/assets/9a171e94-baa3-40c9-81e3-385e543284d2" />
+
 ---
 
 ### 用例五：情绪-生理耦合分析
@@ -67,6 +83,8 @@
 当 |r| > 0.3 时，情绪-生理耦合被激活，情绪信号正式进入评分模型，权重为 15%，并根据个人耦合强度动态调整放大系数（最高 1.2×）。
 
 「我的档案」Tab 显示双轴折线图（风险评分 vs. 情绪评分）及中文解读文字，个人参数面板中也会显示耦合状态和相关系数。
+
+<img width="3024" height="1568" alt="image" src="https://github.com/user-attachments/assets/81352b0d-3b3a-4196-8a20-3d2e39a1c62f" />
 
 ---
 
@@ -88,6 +106,14 @@
 | P0 默认 | 无其他信号 | 全天保证喝够1500 mL白开水 |
 
 推荐卡片以颜色区分紧急程度（红/黄/绿），并显示建议类别、干预文本和一行推荐理由。系统还会检查用户当前进行中的健康实验，避免推荐与实验变量重叠的建议。
+
+<img width="3024" height="1648" alt="image" src="https://github.com/user-attachments/assets/b3c344fc-27ac-469b-8700-9b064aab2976" />
+
+<img width="3024" height="1648" alt="image" src="https://github.com/user-attachments/assets/d509fb60-0884-49d7-8b0e-4202ec16e2bd" />
+
+<img width="3024" height="1648" alt="image" src="https://github.com/user-attachments/assets/178a6a70-4549-44c3-b335-16701480ad91" />
+
+
 
 ---
 
