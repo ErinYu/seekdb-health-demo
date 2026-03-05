@@ -1,6 +1,6 @@
 # 🩺 慢病早期预警 Agent — SeekDB Demo
 
-基于 **SeekDB**（OceanBase AI-native 数据库）的个性化健康风险评估 demo。
+基于 **SeekDB**（OceanBase AI-native 数据库）的[个性化健康风险评估 demo](https://69a8fc882375cb0b46626fd9--coruscating-mousse-9729de.netlify.app/)。
 
 用户每天写一段健康日记，系统就会给出一个风险评估，并随着使用时间的增长越来越"了解"这个用户。产品的所有核心分析——人群对比、趋势追踪、基线计算、实验分析、反馈矫正——**全部由 SeekDB 的混合搜索和 SQL 能力承载，无需额外引入向量数据库或搜索引擎**。
 
